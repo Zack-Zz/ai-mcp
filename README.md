@@ -1,5 +1,7 @@
 # ai-mcp
 
+English | [简体中文](./README.zh-CN.md)
+
 TypeScript monorepo for an MCP Server and MCP Client (SDK + CLI), including `stdio`, `http`, and `sse` transport support.
 
 ## Packages
