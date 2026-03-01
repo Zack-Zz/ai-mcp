@@ -1,0 +1,14 @@
+{
+  "name": "@ai-mcp/example-stdio-basic",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "tsx server.ts",
+    "client:list": "tsx client-list.ts",
+    "client:call": "tsx client-call.ts"
+  },
+  "dependencies": {
+    "@ai-mcp/mcp-client": "workspace:*",
+    "@ai-mcp/mcp-server": "workspace:*"
+  }
+}

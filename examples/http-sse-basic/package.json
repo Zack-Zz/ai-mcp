@@ -1,0 +1,15 @@
+{
+  "name": "@ai-mcp/example-http-sse-basic",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server:http": "tsx server-http.ts",
+    "server:sse": "tsx server-sse.ts",
+    "client:http": "tsx client-http.ts",
+    "client:sse": "tsx client-sse.ts"
+  },
+  "dependencies": {
+    "@ai-mcp/mcp-client": "workspace:*",
+    "@ai-mcp/mcp-server": "workspace:*"
+  }
+}
