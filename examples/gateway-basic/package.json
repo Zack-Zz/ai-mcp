@@ -1,0 +1,14 @@
+{
+  "name": "@ai-mcp/example-gateway-basic",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gateway:http": "tsx start-gateway-http.ts",
+    "client:call": "tsx call-through-gateway.ts"
+  },
+  "dependencies": {
+    "@ai-mcp/gateway": "workspace:*",
+    "@ai-mcp/mcp-client": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}

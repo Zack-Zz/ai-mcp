@@ -1,0 +1,20 @@
+{
+  "tenantId": "demo",
+  "allowLegacyHttpSse": false,
+  "policy": {
+    "allowTools": ["local__echo", "local__time"],
+    "rateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 100
+    }
+  },
+  "backends": [
+    {
+      "id": "local",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["packages/mcp-server/dist/cli.js", "--transport", "stdio"],
+      "cwd": "../.."
+    }
+  ]
+}

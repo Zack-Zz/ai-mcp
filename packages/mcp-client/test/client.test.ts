@@ -1,22 +1,76 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '../src/client.js';
 
+const mocks = vi.hoisted(() => ({
+  connect: vi.fn(async () => undefined),
+  close: vi.fn(async () => undefined),
+  listTools: vi.fn<() => Promise<{ tools: { name: string; description?: string }[] }>>(
+    async () => ({
+      tools: []
+    })
+  ),
+  callTool: vi.fn<() => Promise<unknown>>(async () => ({ content: [], structuredContent: {} })),
+  streamableCtorArg: undefined as URL | undefined,
+  sseCtorArg: undefined as URL | undefined,
+  stdioCtorArg: undefined as { command: string; args?: string[] | undefined } | undefined
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+  Client: class {
+    public async connect(): Promise<void> {
+      await mocks.connect();
+    }
+
+    public async close(): Promise<void> {
+      await mocks.close();
+    }
+
+    public async listTools(): Promise<{ tools: { name: string; description?: string }[] }> {
+      return await mocks.listTools();
+    }
+
+    public async callTool(): Promise<unknown> {
+      return await mocks.callTool();
+    }
+  }
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+  StreamableHTTPClientTransport: class {
+    public constructor(url: URL) {
+      mocks.streamableCtorArg = url;
+    }
+  }
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/sse.js', () => ({
+  SSEClientTransport: class {
+    public constructor(url: URL) {
+      mocks.sseCtorArg = url;
+    }
+  }
+}));
+
+vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+  StdioClientTransport: class {
+    public constructor(params: { command: string; args?: string[] }) {
+      mocks.stdioCtorArg = params;
+    }
+  }
+}));
+
 afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
+  mocks.streamableCtorArg = undefined;
+  mocks.sseCtorArg = undefined;
+  mocks.stdioCtorArg = undefined;
 });
 
 describe('mcp client', () => {
-  it('lists tools over http', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        id: 'ok-0',
-        result: {
-          tools: [{ name: 'echo', description: 'Echo back input' }]
-        }
-      })
+  it('lists tools over http transport', async () => {
+    mocks.listTools.mockResolvedValueOnce({
+      tools: [{ name: 'echo', description: 'Echo back input' }]
     });
-    vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient({
       transport: 'http',
@@ -24,20 +78,18 @@ describe('mcp client', () => {
     });
 
     const tools = await client.listTools();
+
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
+    expect(mocks.streamableCtorArg?.toString()).toBe('http://localhost:3200/mcp');
     expect(tools).toEqual([{ name: 'echo', description: 'Echo back input' }]);
     await client.close();
   });
 
-  it('calls tool over http', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        id: 'ok-1',
-        result: {
-          output: { text: 'hello' }
-        }
-      })
+  it('calls tool and returns structured content', async () => {
+    mocks.callTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"text":"ignored"}' }],
+      structuredContent: { text: 'hello' }
     });
-    vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient({
       transport: 'http',
@@ -46,7 +98,21 @@ describe('mcp client', () => {
 
     const output = await client.callTool('echo', { text: 'hello' });
     expect(output).toEqual({ text: 'hello' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await client.close();
+  });
+
+  it('falls back to text content json when structured content missing', async () => {
+    mocks.callTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"text":"hello-fallback"}' }]
+    });
+
+    const client = createClient({
+      transport: 'http',
+      endpoint: 'http://localhost:3200/mcp'
+    });
+
+    const output = await client.callTool('echo', { text: 'hello-fallback' });
+    expect(output).toEqual({ text: 'hello-fallback' });
     await client.close();
   });
 
@@ -62,81 +128,40 @@ describe('mcp client', () => {
     );
   });
 
-  it('supports sse transport path', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        id: 'ok-sse',
-        result: {
-          output: { text: 'hello-sse' }
-        }
-      })
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = createClient({
+  it('normalizes sse endpoint to stream url', () => {
+    createClient({
       transport: 'sse',
       endpoint: 'http://localhost:3001/sse/call'
     });
-    const output = await client.callTool('echo', { text: 'hello-sse' });
-    expect(output).toEqual({ text: 'hello-sse' });
-    await client.close();
+
+    expect(mocks.sseCtorArg?.toString()).toBe('http://localhost:3001/sse');
   });
 
-  it('throws for invalid list response shape', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        id: 'bad-list',
-        result: { output: { text: 'not-tools' } }
-      })
+  it('parses stdio command with quoted args', () => {
+    createClient({
+      transport: 'stdio',
+      endpoint: 'node "packages/mcp-server/dist/cli.js" --transport stdio'
     });
-    vi.stubGlobal('fetch', fetchMock);
+
+    expect(mocks.stdioCtorArg).toEqual({
+      command: 'node',
+      args: ['packages/mcp-server/dist/cli.js', '--transport', 'stdio']
+    });
+  });
+
+  it('throws for invalid tool response payload', async () => {
+    mocks.callTool.mockResolvedValueOnce({
+      content: [{ type: 'image', data: 'abc', mimeType: 'image/png' }]
+    });
 
     const client = createClient({
       transport: 'http',
       endpoint: 'http://localhost:3200/mcp'
     });
-    await expect(client.listTools()).rejects.toThrowError('Invalid list tools response');
-    await client.close();
-  });
 
-  it('throws for rpc error payload', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        id: 'rpc-err',
-        error: {
-          code: 'INVALID_PARAMS',
-          message: 'bad input',
-          traceId: 'trace-e1'
-        }
-      })
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = createClient({
-      transport: 'http',
-      endpoint: 'http://localhost:3200/mcp'
-    });
-    await expect(client.callTool('echo', { text: 'x' })).rejects.toThrowError('bad input');
-    await client.close();
-  });
-
-  it('handles timeout', async () => {
-    const fetchMock = vi.fn((_: string, init?: RequestInit) => {
-      return new Promise((_, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          reject(new Error('aborted'));
-        });
-      });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const client = createClient({
-      transport: 'http',
-      endpoint: 'http://localhost:3201/mcp',
-      timeoutMs: 20
-    });
-
-    await expect(client.listTools()).rejects.toThrowError();
+    await expect(client.callTool('echo', { text: 'x' })).rejects.toThrowError(
+      'Invalid tool call response'
+    );
     await client.close();
   });
 });

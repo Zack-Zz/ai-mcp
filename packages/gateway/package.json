@@ -1,11 +1,11 @@
 {
-  "name": "@ai-mcp/mcp-client",
+  "name": "@ai-mcp/gateway",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "mcp-client": "dist/cli.js"
+    "mcp-gateway": "dist/cli.js"
   },
   "exports": {
     ".": {
@@ -22,6 +22,6 @@
   },
   "dependencies": {
     "@ai-mcp/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.17.5"
+    "@modelcontextprotocol/sdk": "^1.27.1"
   }
 }
