@@ -6,3 +6,10 @@ dist/
 .idea/
 .vscode/
 .pnpm-store/
+.codex/config.toml
+.ai-code/
+.agents/skills/*
+.codex/*
+.codex
+AGENTS.md
+
