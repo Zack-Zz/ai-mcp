@@ -16,6 +16,10 @@ Built-in capabilities:
 - Resource: `server-info`
 - Prompt: `tool-guide`
 
+## Repository Description
+
+TypeScript MCP monorepo with MCP Server and MCP Client (SDK/CLI), providing shared protocol schemas, unified error model, and stdio/http/sse transport adapters.
+
 ## Quickstart
 
 ```bash
@@ -35,14 +39,28 @@ Call tool via CLI:
 pnpm --filter @ai-mcp/mcp-client dev -- tools call echo --transport http --endpoint http://localhost:3000/mcp --json '{"text":"hello"}'
 ```
 
+## Architecture Constraints
+
+- Shared protocol boundary: all external I/O is defined in `@ai-mcp/shared` and validated by `zod`.
+- Transport strategy: keep business logic decoupled from transport; current adapters are `stdio`, `http`, and `sse`.
+- Unified error model: normalize all failures into `{ code, message, traceId, details? }`.
+- Extension points: tool/resource/prompt registration and middleware pipeline (`auth`, `rate-limit`, `audit` placeholders).
+
 ## Quality gates
 
 CI runs:
 
 - `pnpm lint`
 - `pnpm typecheck`
-- `pnpm test`
+- `pnpm test:coverage`
 - `pnpm build`
+
+Coverage thresholds are enforced at 80% (lines/functions/branches/statements).
+
+## Contribution and Git
+
+- Commit style: Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+- PRs should include motivation, change scope, and test notes.
 
 ## Examples
 
