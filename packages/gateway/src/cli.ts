@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { McpGatewayServer } from './gateway-server.js';
 import type { BackendSpec, GatewayPolicyOptions } from './types.js';
 
@@ -18,6 +19,25 @@ function getArg(name: string, fallback?: string): string | undefined {
   return process.argv[index + 1] ?? fallback;
 }
 
+function resolveBackends(backends: BackendSpec[], configPath: string): BackendSpec[] {
+  const configDir = dirname(resolve(configPath));
+
+  return backends.map((backend) => {
+    if (backend.transport !== 'stdio') {
+      return backend;
+    }
+
+    if (!backend.cwd) {
+      return backend;
+    }
+
+    return {
+      ...backend,
+      cwd: resolve(configDir, backend.cwd)
+    };
+  });
+}
+
 async function main(): Promise<void> {
   const configPath = getArg('config');
   if (!configPath) {
@@ -34,7 +54,9 @@ async function main(): Promise<void> {
     throw new Error('config.backends must be a non-empty array');
   }
 
-  const gateway = new McpGatewayServer(config.backends, {
+  const resolvedBackends = resolveBackends(config.backends, configPath);
+
+  const gateway = new McpGatewayServer(resolvedBackends, {
     ...(config.tenantId ? { tenantId: config.tenantId } : {}),
     ...(config.policy ? { policy: config.policy } : {}),
     ...(config.allowLegacyHttpSse !== undefined

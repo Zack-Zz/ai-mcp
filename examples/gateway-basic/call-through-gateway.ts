@@ -1,12 +1,14 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+const endpoint = process.env.GATEWAY_ENDPOINT ?? 'http://localhost:4100/mcp';
+
 const client = new Client({
   name: 'gateway-basic-example-client',
   version: '0.1.0'
 });
 
-await client.connect(new StreamableHTTPClientTransport(new URL('http://localhost:4100/mcp')));
+await client.connect(new StreamableHTTPClientTransport(new URL(endpoint)));
 
 const tools = await client.listTools();
 console.log(

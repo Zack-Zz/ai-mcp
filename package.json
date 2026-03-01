@@ -8,6 +8,7 @@
     "dev": "pnpm --filter @ai-mcp/mcp-server dev",
     "lint": "pnpm -r lint",
     "test": "vitest run",
+    "test:e2e:gateway": "node scripts/e2e-gateway-basic.mjs",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "pnpm -r typecheck",

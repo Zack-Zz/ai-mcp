@@ -158,6 +158,11 @@ export class McpGatewayServer {
       try {
         await transport.handleRequest(req, res);
       } catch (error) {
+        process.stderr.write(
+          `[gateway-http] handleRequest error: ${
+            error instanceof Error ? (error.stack ?? error.message) : String(error)
+          }\n`
+        );
         res.writeHead(500, { 'content-type': 'application/json' });
         res.end(
           JSON.stringify({
