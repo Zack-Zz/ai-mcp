@@ -14,3 +14,5 @@ Terminal 2:
 ```bash
 pnpm --filter @ai-mcp/example-gateway-basic client:call
 ```
+
+After calls, audit lines are appended to `examples/gateway-basic/gateway-audit.log`.

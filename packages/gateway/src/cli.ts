@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { McpGatewayServer } from './gateway-server.js';
+import { JsonlAuditStore } from './audit-jsonl.js';
 import type { BackendSpec, GatewayPolicyOptions } from './types.js';
 
 type GatewayConfig = {
@@ -9,6 +10,7 @@ type GatewayConfig = {
   tenantId?: string;
   policy?: GatewayPolicyOptions;
   allowLegacyHttpSse?: boolean;
+  auditFilePath?: string;
 };
 
 function getArg(name: string, fallback?: string): string | undefined {
@@ -55,13 +57,18 @@ async function main(): Promise<void> {
   }
 
   const resolvedBackends = resolveBackends(config.backends, configPath);
+  const configDir = dirname(resolve(configPath));
+  const resolvedAuditFilePath = config.auditFilePath
+    ? resolve(configDir, config.auditFilePath)
+    : undefined;
 
   const gateway = new McpGatewayServer(resolvedBackends, {
     ...(config.tenantId ? { tenantId: config.tenantId } : {}),
     ...(config.policy ? { policy: config.policy } : {}),
     ...(config.allowLegacyHttpSse !== undefined
       ? { allowLegacyHttpSse: config.allowLegacyHttpSse }
-      : {})
+      : {}),
+    ...(resolvedAuditFilePath ? { auditStore: new JsonlAuditStore(resolvedAuditFilePath) } : {})
   });
   await gateway.initialize();
 

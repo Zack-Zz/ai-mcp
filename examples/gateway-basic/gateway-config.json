@@ -1,6 +1,7 @@
 {
   "tenantId": "demo",
   "allowLegacyHttpSse": false,
+  "auditFilePath": "./gateway-audit.log",
   "policy": {
     "allowTools": ["local__echo", "local__time"],
     "rateLimit": {
