@@ -13,6 +13,7 @@ import type { BackendSpec, GatewayServerOptions, StartGatewayHttpOptions } from 
 import { InMemoryAuditStore } from './audit.js';
 import { GatewayPolicyEngine } from './policy.js';
 import { resolveProtocolVersion } from './protocol.js';
+import { hashInputPayload } from './audit-hash.js';
 
 const defaultInputSchema = z.object({}).passthrough();
 const HTTP_RPC_PATH = '/mcp';
@@ -26,6 +27,7 @@ export class McpGatewayServer {
   private readonly auditStore: NonNullable<GatewayServerOptions['auditStore']>;
   private readonly tenantId: string;
   private readonly allowLegacyHttpSse: boolean;
+  private readonly auditHashSecret: string | null;
   private connectedTransport: SdkTransport | null = null;
 
   public constructor(backends: BackendSpec[], options: GatewayServerOptions = {}) {
@@ -34,6 +36,7 @@ export class McpGatewayServer {
     this.auditStore = options.auditStore ?? new InMemoryAuditStore();
     this.tenantId = options.tenantId ?? 'default';
     this.allowLegacyHttpSse = options.allowLegacyHttpSse ?? false;
+    this.auditHashSecret = options.auditHashSecret ?? null;
     this.sdkServer = new McpServer({
       name: options.name ?? 'ai-mcp-gateway',
       version: options.version ?? '0.1.0'
@@ -59,6 +62,10 @@ export class McpGatewayServer {
         },
         async (input, extra) => {
           const traceId = String(extra.requestId ?? createTraceId());
+          const inputHash =
+            this.auditHashSecret !== null
+              ? hashInputPayload(input, this.auditHashSecret)
+              : undefined;
           const decision = this.policyEngine.authorizeCall({
             tenantId: this.tenantId,
             toolName: tool.publicName,
@@ -74,6 +81,7 @@ export class McpGatewayServer {
               toolName: tool.publicName,
               traceId,
               decision: 'deny',
+              ...(inputHash ? { inputHash } : {}),
               ...(decision.reason ? { reason: decision.reason } : {})
             });
             throw new Error(decision.reason ?? 'policy denied');
@@ -91,7 +99,8 @@ export class McpGatewayServer {
             action: 'tools/call',
             toolName: tool.publicName,
             traceId,
-            decision: 'allow'
+            decision: 'allow',
+            ...(inputHash ? { inputHash } : {})
           });
 
           const serialized = JSON.stringify(output ?? {});

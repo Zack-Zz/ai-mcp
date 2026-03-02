@@ -39,6 +39,7 @@ export type GatewayServerOptions = {
   policy?: GatewayPolicyOptions;
   auditStore?: AuditStore;
   allowLegacyHttpSse?: boolean;
+  auditHashSecret?: string;
 };
 
 export type StartGatewayHttpOptions = {
@@ -75,6 +76,7 @@ export type AuditEvent = {
   toolName: string;
   traceId: string;
   decision: 'allow' | 'deny';
+  inputHash?: string;
   reason?: string;
 };
 

@@ -11,6 +11,7 @@ type GatewayConfig = {
   policy?: GatewayPolicyOptions;
   allowLegacyHttpSse?: boolean;
   auditFilePath?: string;
+  auditHashSecret?: string;
 };
 
 function getArg(name: string, fallback?: string): string | undefined {
@@ -68,7 +69,8 @@ async function main(): Promise<void> {
     ...(config.allowLegacyHttpSse !== undefined
       ? { allowLegacyHttpSse: config.allowLegacyHttpSse }
       : {}),
-    ...(resolvedAuditFilePath ? { auditStore: new JsonlAuditStore(resolvedAuditFilePath) } : {})
+    ...(resolvedAuditFilePath ? { auditStore: new JsonlAuditStore(resolvedAuditFilePath) } : {}),
+    ...(config.auditHashSecret ? { auditHashSecret: config.auditHashSecret } : {})
   });
   await gateway.initialize();
 
