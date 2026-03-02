@@ -10,4 +10,4 @@ dist/
 .agents
 .codex
 AGENTS.md
-
+examples/gateway-basic/gateway-audit.log
