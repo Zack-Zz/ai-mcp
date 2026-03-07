@@ -1,0 +1,19 @@
+{
+  "tenantId": "demo-http",
+  "allowLegacyHttpSse": true,
+  "policy": {
+    "allowTools": ["local__echo", "local__time"],
+    "rateLimit": {
+      "windowMs": 60000,
+      "maxRequests": 100
+    }
+  },
+  "backends": [
+    {
+      "id": "local",
+      "transport": "http",
+      "endpoint": "http://127.0.0.1:3901/mcp",
+      "protocolVersion": "2025-11-25"
+    }
+  ]
+}

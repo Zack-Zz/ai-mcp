@@ -23,3 +23,5 @@ jobs:
       - run: pnpm test:coverage
       - run: pnpm build
       - run: pnpm test:e2e:gateway
+      - run: pnpm test:e2e:gateway:http
+      - run: pnpm test:e2e:gateway:matrix
