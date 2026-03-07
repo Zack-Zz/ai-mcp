@@ -244,6 +244,22 @@ MVP 只保留必要实体：
 - 兼容矩阵测试通过
 - 发布说明明确支持范围与限制
 
+### 9.4 当前实现状态（2026-03-02）
+
+- 已落地：
+  - 官方 SDK 驱动的 Gateway（upstream server + downstream connectors）
+  - allowlist + rate limit + 审计内存/JSONL + `inputHash(HMAC-SHA256)`
+  - 网关错误码规范化：
+    - `-32010` rate_limited
+    - `-32020` policy_denied
+    - `-32030` backend_unavailable
+    - `-32040` backend_timeout
+  - CLI 配置校验（zod）与运行参数覆盖（tenant/legacy/audit）
+  - 协议矩阵回归脚本（`2025-11-25/2025-03-26/2024-11-05`）
+- 待持续迭代：
+  - 更细粒度鉴权策略（JWT/OIDC）与多租户配额平台化
+  - 生产级指标上报接入（Prometheus/OpenTelemetry exporter）
+
 ## 10. 测试策略
 
 必须覆盖：
@@ -261,6 +277,9 @@ MVP 只保留必要实体：
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm build`
+- `pnpm test:e2e:gateway`
+- `pnpm test:e2e:gateway:http`
+- `pnpm test:e2e:gateway:matrix`
 
 ## 11. 开工前冻结项（必须确认）
 

@@ -9,6 +9,7 @@
 - `@ai-mcp/shared`: 协议类型、zod schema、统一错误模型
 - `@ai-mcp/mcp-server`: MCP Server 实现与传输适配器
 - `@ai-mcp/mcp-client`: MCP Client SDK 与 CLI
+- `@ai-mcp/gateway`: MCP Gateway（基于官方 SDK 构建）
 
 内置能力：
 
@@ -57,6 +58,12 @@ CI 执行以下检查：
 
 覆盖率门槛为 80%（lines/functions/branches/statements）。
 
+Gateway 回归检查：
+
+- `pnpm test:e2e:gateway`（stdio 基线）
+- `pnpm test:e2e:gateway:http`（HTTP 路径 + 策略拒绝 + 审计落盘）
+- `pnpm test:e2e:gateway:matrix`（协议矩阵：`2025-11-25/2025-03-26/2024-11-05`）
+
 ## 提交与协作
 
 - 提交规范：Conventional Commits（`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`）。
@@ -66,6 +73,18 @@ CI 执行以下检查：
 
 - `examples/stdio-basic`
 - `examples/http-sse-basic`
+- `examples/gateway-basic`
+
+## Gateway 运行参数覆盖
+
+`packages/gateway/src/cli.ts` 支持配置文件 + 命令行覆盖：
+
+- `--tenantId <string>`
+- `--allowLegacyHttpSse <true|false>`
+- `--auditFilePath <path>`
+- `--auditHashSecret <secret>`
+
+运维手册：`docs/gateway-operations.md`
 
 ## License
 

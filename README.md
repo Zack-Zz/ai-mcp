@@ -9,6 +9,7 @@ TypeScript monorepo for an MCP Server and MCP Client (SDK + CLI), including `std
 - `@ai-mcp/shared`: protocol types, zod schemas, error model
 - `@ai-mcp/mcp-server`: MCP server implementation and transport adapters
 - `@ai-mcp/mcp-client`: MCP client SDK and CLI
+- `@ai-mcp/gateway`: MCP gateway (SDK-based upstream + downstream connectors)
 
 Built-in capabilities:
 
@@ -57,6 +58,12 @@ CI runs:
 
 Coverage thresholds are enforced at 80% (lines/functions/branches/statements).
 
+Gateway regression checks:
+
+- `pnpm test:e2e:gateway` (stdio baseline)
+- `pnpm test:e2e:gateway:http` (HTTP path + policy deny + audit persistence)
+- `pnpm test:e2e:gateway:matrix` (protocol matrix: `2025-11-25/2025-03-26/2024-11-05`)
+
 ## Contribution and Git
 
 - Commit style: Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
@@ -66,6 +73,18 @@ Coverage thresholds are enforced at 80% (lines/functions/branches/statements).
 
 - `examples/stdio-basic`
 - `examples/http-sse-basic`
+- `examples/gateway-basic`
+
+## Gateway Runtime Flags
+
+`packages/gateway/src/cli.ts` supports config-file values plus CLI overrides:
+
+- `--tenantId <string>`
+- `--allowLegacyHttpSse <true|false>`
+- `--auditFilePath <path>`
+- `--auditHashSecret <secret>`
+
+Operations runbook: `docs/gateway-operations.md`
 
 ## License
 
