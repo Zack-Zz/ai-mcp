@@ -29,6 +29,7 @@ export class McpGatewayServer {
   private readonly allowLegacyHttpSse: boolean;
   private readonly auditHashSecret: string | null;
   private connectedTransport: SdkTransport | null = null;
+  private transportReady: Promise<void> | null = null;
 
   public constructor(backends: BackendSpec[], options: GatewayServerOptions = {}) {
     this.gatewayCore = new McpGatewayCore(backends);
@@ -121,12 +122,12 @@ export class McpGatewayServer {
 
   public startStdio(): void {
     const transport = new StdioServerTransport() as SdkTransport;
-    void this.connectTransport(transport);
+    this.transportReady = this.connectTransport(transport);
   }
 
   public startHttp(options: StartGatewayHttpOptions): ReturnType<typeof createHttpServer> {
     const transport = new StreamableHTTPServerTransport();
-    void this.connectTransport(transport as SdkTransport);
+    this.transportReady = this.connectTransport(transport as SdkTransport);
 
     const path = options.path ?? HTTP_RPC_PATH;
     const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -165,6 +166,9 @@ export class McpGatewayServer {
       }
 
       try {
+        if (this.transportReady) {
+          await this.transportReady;
+        }
         await transport.handleRequest(req, res);
       } catch (error) {
         process.stderr.write(

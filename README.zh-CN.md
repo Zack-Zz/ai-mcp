@@ -16,7 +16,7 @@
 - Resource: `server-info`
 - Prompt: `tool-guide`
 
-## 仓库描述（可用于 Git 平台简介）
+## 仓库描述
 
 TypeScript MCP Monorepo，包含 MCP Server 与 MCP Client（SDK/CLI），提供共享协议 schema、统一错误模型，以及 `stdio/http/sse` 传输适配能力。
 
