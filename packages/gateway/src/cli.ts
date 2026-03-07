@@ -61,6 +61,20 @@ function getArg(name: string, fallback?: string): string | undefined {
   return process.argv[index + 1] ?? fallback;
 }
 
+function getBooleanArg(name: string): boolean | undefined {
+  const value = getArg(name);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  throw new Error(`Invalid boolean value for --${name}: ${value}`);
+}
+
 function resolveBackends(backends: BackendSpec[], configPath: string): BackendSpec[] {
   const configDir = dirname(resolve(configPath));
 
@@ -88,25 +102,46 @@ async function main(): Promise<void> {
 
   const transport = getArg('transport', 'http');
   const port = Number(getArg('port', '4000'));
+  if (transport !== 'http' && transport !== 'stdio') {
+    throw new Error(`Unsupported transport: ${transport}`);
+  }
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid --port value: ${port}`);
+  }
 
   const raw = readFileSync(configPath, 'utf8');
   const parsedJson = JSON.parse(raw) as unknown;
   const config = gatewayConfigSchema.parse(parsedJson) as GatewayConfig;
 
-  const resolvedBackends = resolveBackends(config.backends, configPath);
+  const overrideTenantId = getArg('tenantId');
+  const overrideAllowLegacyHttpSse = getBooleanArg('allowLegacyHttpSse');
+  const overrideAuditFilePath = getArg('auditFilePath');
+  const overrideAuditHashSecret = getArg('auditHashSecret');
+
+  const effectiveConfig: GatewayConfig = {
+    ...config,
+    ...(overrideTenantId ? { tenantId: overrideTenantId } : {}),
+    ...(overrideAllowLegacyHttpSse !== undefined
+      ? { allowLegacyHttpSse: overrideAllowLegacyHttpSse }
+      : {}),
+    ...(overrideAuditFilePath ? { auditFilePath: overrideAuditFilePath } : {}),
+    ...(overrideAuditHashSecret ? { auditHashSecret: overrideAuditHashSecret } : {})
+  };
+
+  const resolvedBackends = resolveBackends(effectiveConfig.backends, configPath);
   const configDir = dirname(resolve(configPath));
-  const resolvedAuditFilePath = config.auditFilePath
-    ? resolve(configDir, config.auditFilePath)
+  const resolvedAuditFilePath = effectiveConfig.auditFilePath
+    ? resolve(configDir, effectiveConfig.auditFilePath)
     : undefined;
 
   const gateway = new McpGatewayServer(resolvedBackends, {
-    ...(config.tenantId ? { tenantId: config.tenantId } : {}),
-    ...(config.policy ? { policy: config.policy } : {}),
-    ...(config.allowLegacyHttpSse !== undefined
-      ? { allowLegacyHttpSse: config.allowLegacyHttpSse }
+    ...(effectiveConfig.tenantId ? { tenantId: effectiveConfig.tenantId } : {}),
+    ...(effectiveConfig.policy ? { policy: effectiveConfig.policy } : {}),
+    ...(effectiveConfig.allowLegacyHttpSse !== undefined
+      ? { allowLegacyHttpSse: effectiveConfig.allowLegacyHttpSse }
       : {}),
     ...(resolvedAuditFilePath ? { auditStore: new JsonlAuditStore(resolvedAuditFilePath) } : {}),
-    ...(config.auditHashSecret ? { auditHashSecret: config.auditHashSecret } : {})
+    ...(effectiveConfig.auditHashSecret ? { auditHashSecret: effectiveConfig.auditHashSecret } : {})
   });
   await gateway.initialize();
 

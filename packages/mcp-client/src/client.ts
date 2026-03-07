@@ -13,6 +13,7 @@ export type CreateClientOptions = {
   transport: TransportKind;
   endpoint?: string;
   timeoutMs?: number;
+  protocolVersion?: string;
 };
 
 type SdkTransport = Parameters<SdkClient['connect']>[0];
@@ -118,8 +119,15 @@ function createTransport(options: CreateClientOptions): SdkTransport {
   }
 
   switch (options.transport) {
-    case 'http':
-      return new StreamableHTTPClientTransport(new URL(options.endpoint!)) as SdkTransport;
+    case 'http': {
+      const transport = new StreamableHTTPClientTransport(
+        new URL(options.endpoint!)
+      ) as StreamableHTTPClientTransport;
+      if (options.protocolVersion) {
+        transport.setProtocolVersion(options.protocolVersion);
+      }
+      return transport as SdkTransport;
+    }
     case 'sse': {
       const endpoint = options.endpoint!;
       const normalizedEndpoint = endpoint.endsWith('/call') ? endpoint.slice(0, -5) : endpoint;

@@ -7,6 +7,7 @@ import { createTraceId } from '@ai-mcp/shared';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { McpGatewayCore } from './gateway-core.js';
 import type { BackendSpec, GatewayServerOptions, StartGatewayHttpOptions } from './types.js';
@@ -17,6 +18,10 @@ import { hashInputPayload } from './audit-hash.js';
 
 const defaultInputSchema = z.object({}).passthrough();
 const HTTP_RPC_PATH = '/mcp';
+const RATE_LIMITED_ERROR_CODE = -32010;
+const POLICY_DENIED_ERROR_CODE = -32020;
+const BACKEND_UNAVAILABLE_ERROR_CODE = -32030;
+const BACKEND_TIMEOUT_ERROR_CODE = -32040;
 
 type SdkTransport = Parameters<McpServer['connect']>[0];
 
@@ -85,14 +90,15 @@ export class McpGatewayServer {
               ...(inputHash ? { inputHash } : {}),
               ...(decision.reason ? { reason: decision.reason } : {})
             });
-            throw new Error(decision.reason ?? 'policy denied');
+            throw createGatewayPolicyError(decision.reason ?? 'policy denied');
           }
 
-          const output = await this.gatewayCore.callMappedTool(
-            tool.publicName,
-            input,
-            extra.signal
-          );
+          let output: unknown;
+          try {
+            output = await this.gatewayCore.callMappedTool(tool.publicName, input, extra.signal);
+          } catch (error) {
+            throw normalizeGatewayRuntimeError(error);
+          }
 
           await this.auditStore.record({
             timestamp: new Date().toISOString(),
@@ -156,7 +162,7 @@ export class McpGatewayServer {
           JSON.stringify({
             id: 'unknown',
             error: {
-              code: 'INVALID_PARAMS',
+              code: ErrorCode.InvalidParams,
               message: checkedProtocol.message,
               traceId: createTraceId()
             }
@@ -181,7 +187,7 @@ export class McpGatewayServer {
           JSON.stringify({
             id: 'unknown',
             error: {
-              code: 'INTERNAL',
+              code: ErrorCode.InternalError,
               message: error instanceof Error ? error.message : String(error),
               traceId: createTraceId()
             }
@@ -216,4 +222,44 @@ export class McpGatewayServer {
     await this.sdkServer.connect(transport);
     this.connectedTransport = transport;
   }
+}
+
+function createGatewayPolicyError(reason: string): McpError {
+  if (reason.toLowerCase().includes('rate limit')) {
+    return new McpError(RATE_LIMITED_ERROR_CODE, reason, {
+      category: 'rate_limited'
+    });
+  }
+
+  return new McpError(POLICY_DENIED_ERROR_CODE, reason, {
+    category: 'policy_denied'
+  });
+}
+
+function normalizeGatewayRuntimeError(error: unknown): McpError {
+  if (error instanceof McpError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const normalizedMessage = message.toLowerCase();
+
+  if (normalizedMessage.includes('timeout') || normalizedMessage.includes('timed out')) {
+    return new McpError(BACKEND_TIMEOUT_ERROR_CODE, message, {
+      category: 'backend_timeout'
+    });
+  }
+
+  if (
+    normalizedMessage.includes('connect') ||
+    normalizedMessage.includes('fetch failed') ||
+    normalizedMessage.includes('econnrefused') ||
+    normalizedMessage.includes('connector not found')
+  ) {
+    return new McpError(BACKEND_UNAVAILABLE_ERROR_CODE, message, {
+      category: 'backend_unavailable'
+    });
+  }
+
+  return new McpError(ErrorCode.InternalError, message);
 }

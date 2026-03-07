@@ -22,7 +22,7 @@ async function main(): Promise<void> {
 
   if (domain !== 'tools' || !action) {
     process.stderr.write(
-      'Usage: mcp-client tools list|call <name> --transport <stdio|http|sse> --endpoint <url-or-command> [--json <payload>]\n'
+      'Usage: mcp-client tools list|call <name> --transport <stdio|http|sse> --endpoint <url-or-command> [--json <payload>] [--protocolVersion <version>]\n'
     );
     process.exit(1);
   }
@@ -30,6 +30,7 @@ async function main(): Promise<void> {
   const transport = getTransport();
   const endpoint = getArg('endpoint');
   const payload = getArg('json');
+  const protocolVersion = getArg('protocolVersion');
 
   if (transport === 'stdio' && !endpoint) {
     throw new Error(
@@ -43,7 +44,8 @@ async function main(): Promise<void> {
 
   const client = createClient({
     transport,
-    endpoint: computedEndpoint
+    endpoint: computedEndpoint,
+    ...(protocolVersion ? { protocolVersion } : {})
   });
 
   try {

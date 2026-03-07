@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { DownstreamConnector } from './base.js';
 
 type SdkTransport = Parameters<Client['connect']>[0];
@@ -38,7 +39,7 @@ function extractToolOutput(result: unknown): unknown {
 
 export class HttpConnector implements DownstreamConnector {
   private readonly client: Client;
-  private connectPromise?: Promise<void>;
+  private connectPromise: Promise<void> | undefined;
 
   public constructor(
     private readonly endpoint: string,
@@ -51,8 +52,10 @@ export class HttpConnector implements DownstreamConnector {
   }
 
   public async listTools(): Promise<{ name: string; description: string }[]> {
-    await this.ensureConnected();
-    const response = await this.client.listTools(undefined, { timeout: this.timeoutMs });
+    const response = await this.withRetry(async () => {
+      await this.ensureConnected();
+      return await this.client.listTools(undefined, { timeout: this.timeoutMs });
+    });
 
     return response.tools.map((tool) => ({
       name: tool.name,
@@ -61,18 +64,20 @@ export class HttpConnector implements DownstreamConnector {
   }
 
   public async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
-    await this.ensureConnected();
-    const result = await this.client.callTool(
-      {
-        name,
-        arguments: (args ?? {}) as Record<string, unknown>
-      },
-      undefined,
-      {
-        timeout: this.timeoutMs,
-        ...(signal ? { signal } : {})
-      }
-    );
+    const result = await this.withRetry(async () => {
+      await this.ensureConnected();
+      return await this.client.callTool(
+        {
+          name,
+          arguments: (args ?? {}) as Record<string, unknown>
+        },
+        undefined,
+        {
+          timeout: this.timeoutMs,
+          ...(signal ? { signal } : {})
+        }
+      );
+    });
 
     return extractToolOutput(result);
   }
@@ -87,6 +92,30 @@ export class HttpConnector implements DownstreamConnector {
       this.connectPromise = this.client.connect(transport);
     }
 
-    await this.connectPromise;
+    try {
+      await this.connectPromise;
+    } catch (error) {
+      this.connectPromise = undefined;
+      throw error;
+    }
+  }
+
+  private async withRetry<T>(operation: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        this.connectPromise = undefined;
+        if (attempt < 2) {
+          await sleep(60);
+          continue;
+        }
+      }
+    }
+
+    throw lastError;
   }
 }
