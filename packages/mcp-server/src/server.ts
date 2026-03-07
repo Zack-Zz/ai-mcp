@@ -61,6 +61,7 @@ export class McpServer {
 
   private readonly middlewares: Middleware[] = [];
   private connectedTransport: SdkTransport | null = null;
+  private transportReady: Promise<void> | null = null;
 
   public constructor(options: CreateServerOptions = {}) {
     if (options.includeBuiltInTools ?? true) {
@@ -250,12 +251,12 @@ export class McpServer {
 
   public startStdio(): void {
     const transport = new StdioServerTransport() as SdkTransport;
-    void this.connectTransport(transport);
+    this.transportReady = this.connectTransport(transport);
   }
 
   public startHttp(options: StartHttpOptions): ReturnType<typeof createHttpServer> {
     const transport = new StreamableHTTPServerTransport();
-    void this.connectTransport(transport as SdkTransport);
+    this.transportReady = this.connectTransport(transport as SdkTransport);
 
     const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method === 'GET' && req.url === '/health') {
@@ -271,6 +272,9 @@ export class McpServer {
       }
 
       try {
+        if (this.transportReady) {
+          await this.transportReady;
+        }
         await transport.handleRequest(req, res);
       } catch (error) {
         const traceId = createTraceId();

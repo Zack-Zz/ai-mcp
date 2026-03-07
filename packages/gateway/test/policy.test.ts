@@ -25,6 +25,7 @@ describe('GatewayPolicyEngine', () => {
 
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toContain('tool not allowed');
+    expect(decision.reasonCode).toBe('ALLOWLIST');
   });
 
   it('enforces per-tenant per-tool fixed-window rate limit', () => {
@@ -57,6 +58,7 @@ describe('GatewayPolicyEngine', () => {
     expect(first.allowed).toBe(true);
     expect(second.allowed).toBe(true);
     expect(third.allowed).toBe(false);
+    expect(third.reasonCode).toBe('RATE_LIMIT');
   });
 
   it('resets counter when window has passed', () => {

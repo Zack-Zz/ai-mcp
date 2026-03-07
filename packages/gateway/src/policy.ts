@@ -21,7 +21,8 @@ export class GatewayPolicyEngine {
     if (this.allowTools && !this.allowTools.has(ctx.toolName)) {
       return {
         allowed: false,
-        reason: `tool not allowed: ${ctx.toolName}`
+        reason: `tool not allowed: ${ctx.toolName}`,
+        reasonCode: 'ALLOWLIST'
       };
     }
 
@@ -40,7 +41,8 @@ export class GatewayPolicyEngine {
     if (existing.count >= this.options.rateLimit.maxRequests) {
       return {
         allowed: false,
-        reason: `rate limit exceeded for ${ctx.toolName}`
+        reason: `rate limit exceeded for ${ctx.toolName}`,
+        reasonCode: 'RATE_LIMIT'
       };
     }
 

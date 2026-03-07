@@ -90,7 +90,7 @@ export class McpGatewayServer {
               ...(inputHash ? { inputHash } : {}),
               ...(decision.reason ? { reason: decision.reason } : {})
             });
-            throw createGatewayPolicyError(decision.reason ?? 'policy denied');
+            throw createGatewayPolicyError(decision.reasonCode, decision.reason ?? 'policy denied');
           }
 
           let output: unknown;
@@ -224,8 +224,11 @@ export class McpGatewayServer {
   }
 }
 
-function createGatewayPolicyError(reason: string): McpError {
-  if (reason.toLowerCase().includes('rate limit')) {
+function createGatewayPolicyError(
+  reasonCode: 'RATE_LIMIT' | 'ALLOWLIST' | undefined,
+  reason: string
+): McpError {
+  if (reasonCode === 'RATE_LIMIT') {
     return new McpError(RATE_LIMITED_ERROR_CODE, reason, {
       category: 'rate_limited'
     });

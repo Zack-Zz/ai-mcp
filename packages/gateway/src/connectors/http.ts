@@ -52,10 +52,8 @@ export class HttpConnector implements DownstreamConnector {
   }
 
   public async listTools(): Promise<{ name: string; description: string }[]> {
-    const response = await this.withRetry(async () => {
-      await this.ensureConnected();
-      return await this.client.listTools(undefined, { timeout: this.timeoutMs });
-    });
+    await this.ensureConnectedWithRetry();
+    const response = await this.client.listTools(undefined, { timeout: this.timeoutMs });
 
     return response.tools.map((tool) => ({
       name: tool.name,
@@ -64,20 +62,18 @@ export class HttpConnector implements DownstreamConnector {
   }
 
   public async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
-    const result = await this.withRetry(async () => {
-      await this.ensureConnected();
-      return await this.client.callTool(
-        {
-          name,
-          arguments: (args ?? {}) as Record<string, unknown>
-        },
-        undefined,
-        {
-          timeout: this.timeoutMs,
-          ...(signal ? { signal } : {})
-        }
-      );
-    });
+    await this.ensureConnectedWithRetry();
+    const result = await this.client.callTool(
+      {
+        name,
+        arguments: (args ?? {}) as Record<string, unknown>
+      },
+      undefined,
+      {
+        timeout: this.timeoutMs,
+        ...(signal ? { signal } : {})
+      }
+    );
 
     return extractToolOutput(result);
   }
@@ -100,12 +96,13 @@ export class HttpConnector implements DownstreamConnector {
     }
   }
 
-  private async withRetry<T>(operation: () => Promise<T>): Promise<T> {
+  private async ensureConnectedWithRetry(): Promise<void> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await operation();
+        await this.ensureConnected();
+        return;
       } catch (error) {
         lastError = error;
         this.connectPromise = undefined;
@@ -116,6 +113,6 @@ export class HttpConnector implements DownstreamConnector {
       }
     }
 
-    throw lastError;
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }

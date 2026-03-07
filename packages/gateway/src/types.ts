@@ -60,6 +60,7 @@ export type GatewayPolicyOptions = {
 export type PolicyDecision = {
   allowed: boolean;
   reason?: string;
+  reasonCode?: 'RATE_LIMIT' | 'ALLOWLIST';
 };
 
 export type RequestContext = {

@@ -1,9 +1,7 @@
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
-
-const gatewayPort = 3902;
-const gatewayEndpoint = `http://127.0.0.1:${gatewayPort}/mcp`;
 
 function waitForReady(processRef, readyPattern, label) {
   return new Promise((resolve, reject) => {
@@ -89,7 +87,7 @@ function runCommand(command, args) {
   });
 }
 
-async function assertProtocolWorks(protocolVersion) {
+async function assertProtocolWorks(gatewayEndpoint, protocolVersion) {
   const listResult = await runCommand('node', [
     'packages/mcp-client/dist/cli.js',
     'tools',
@@ -129,6 +127,8 @@ async function assertProtocolWorks(protocolVersion) {
 }
 
 async function run() {
+  const gatewayPort = await getFreePort();
+  const gatewayEndpoint = `http://localhost:${gatewayPort}/mcp`;
   const gateway = spawnLongRunning(
     'node',
     [
@@ -153,9 +153,9 @@ async function run() {
   try {
     await waitForReady(gateway, /mcp-gateway started on http:\/\//, 'gateway');
 
-    await assertProtocolWorks('2025-11-25');
-    await assertProtocolWorks('2025-03-26');
-    await assertProtocolWorks('2024-11-05');
+    await assertProtocolWorks(gatewayEndpoint, '2025-11-25');
+    await assertProtocolWorks(gatewayEndpoint, '2025-03-26');
+    await assertProtocolWorks(gatewayEndpoint, '2024-11-05');
 
     process.stdout.write('gateway protocol matrix e2e passed\n');
   } finally {
@@ -167,3 +167,25 @@ run().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exit(1);
 });
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to allocate free port')));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+    server.on('error', reject);
+  });
+}

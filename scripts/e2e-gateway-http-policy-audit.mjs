@@ -1,12 +1,10 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
-
-const gatewayPort = 3904;
-const gatewayEndpoint = `http://127.0.0.1:${gatewayPort}/mcp`;
 
 function spawnLongRunning(command, args, label) {
   const child = spawn(command, args, {
@@ -62,7 +60,7 @@ function waitForReady(processRef, readyPattern, label) {
   });
 }
 
-async function runClientCalls() {
+async function runClientCalls(gatewayEndpoint) {
   const listResult = await runCommand('node', [
     'packages/mcp-client/dist/cli.js',
     'tools',
@@ -112,6 +110,8 @@ async function runClientCalls() {
 }
 
 async function run() {
+  const gatewayPort = await getFreePort();
+  const gatewayEndpoint = `http://localhost:${gatewayPort}/mcp`;
   const dir = mkdtempSync(join(tmpdir(), 'gateway-http-e2e-'));
   const auditPath = join(dir, 'audit.jsonl');
   const configPath = join(dir, 'gateway-config.json');
@@ -166,12 +166,12 @@ async function run() {
   try {
     await waitForReady(gateway, /mcp-gateway started on http:\/\//, 'gateway');
 
-    const notFound = await fetch(`http://127.0.0.1:${gatewayPort}/not-found`);
+    const notFound = await fetch(`http://localhost:${gatewayPort}/not-found`);
     if (notFound.status !== 404) {
       throw new Error(`expected 404 on unknown path, got ${notFound.status}`);
     }
 
-    await runClientCalls();
+    await runClientCalls(gatewayEndpoint);
 
     const rawAudit = readFileSync(auditPath, 'utf8');
     const lines = rawAudit
@@ -232,5 +232,27 @@ function runCommand(command, args, options = {}) {
       }
       resolve({ stdout, stderr, code });
     });
+  });
+}
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to allocate free port')));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+    server.on('error', reject);
   });
 }
