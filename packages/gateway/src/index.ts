@@ -6,3 +6,4 @@ export * from './audit-hash.js';
 export * from './protocol.js';
 export * from './gateway-core.js';
 export * from './gateway-server.js';
+export * from './capability-registry.js';

@@ -38,6 +38,13 @@ describe('JsonlAuditStore', () => {
       toolName: 'local__echo',
       traceId: 'trace-2',
       decision: 'deny',
+      downstream: {
+        backendId: 'local',
+        backendToolName: 'echo'
+      },
+      durationMs: 24,
+      outputSummary: 'TIMEOUT: backend timeout',
+      errorCategory: 'backend_timeout',
       reason: 'rate limit exceeded'
     });
 
@@ -46,9 +53,16 @@ describe('JsonlAuditStore', () => {
     expect(lines).toHaveLength(2);
 
     const first = JSON.parse(lines[0] ?? '{}') as { traceId?: string; decision?: string };
-    const second = JSON.parse(lines[1] ?? '{}') as { traceId?: string; decision?: string };
+    const second = JSON.parse(lines[1] ?? '{}') as {
+      traceId?: string;
+      decision?: string;
+      outputSummary?: string;
+      durationMs?: number;
+    };
 
     expect(first.traceId).toBe('trace-1');
     expect(second.decision).toBe('deny');
+    expect(second.outputSummary).toContain('TIMEOUT');
+    expect(second.durationMs).toBe(24);
   });
 });

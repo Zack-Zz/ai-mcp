@@ -1,4 +1,4 @@
-import type { BackendSpec, GatewayTool } from './types.js';
+import type { BackendSpec, GatewayTool, MappedToolCallResult } from './types.js';
 import type { DownstreamConnector } from './connectors/base.js';
 import { HttpConnector } from './connectors/http.js';
 import { StdioConnector } from './connectors/stdio.js';
@@ -54,7 +54,8 @@ export class McpGatewayCore {
           publicName,
           backendId: backend.id,
           backendToolName: tool.name,
-          description: tool.description
+          description: tool.description,
+          ...(tool.metadata ? { metadata: tool.metadata } : {})
         });
         nextMappings.set(publicName, {
           backendId: backend.id,
@@ -76,7 +77,11 @@ export class McpGatewayCore {
     return this.tools.slice();
   }
 
-  public async callMappedTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+  public async callMappedTool(
+    name: string,
+    args: unknown,
+    signal?: AbortSignal
+  ): Promise<MappedToolCallResult> {
     const mapping = this.toolMappings.get(name);
     if (!mapping) {
       throw new Error(`Mapped tool not found: ${name}`);
@@ -87,7 +92,13 @@ export class McpGatewayCore {
       throw new Error(`Connector not found for backend: ${mapping.backendId}`);
     }
 
-    return await connector.callTool(mapping.backendToolName, args, signal);
+    const result = await connector.callTool(mapping.backendToolName, args, signal);
+    return {
+      backendId: mapping.backendId,
+      backendToolName: mapping.backendToolName,
+      durationMs: result.durationMs,
+      output: result.output
+    };
   }
 
   public async close(): Promise<void> {

@@ -12,9 +12,17 @@ type MockConnector = DownstreamConnector & {
 function createMockConnector(tools: { name: string; description: string }[]): MockConnector {
   const listToolsMock = vi.fn(async () => tools);
   const callToolMock = vi.fn(async (name: string, args: unknown, signal?: AbortSignal) => ({
-    name,
-    args,
-    aborted: signal?.aborted ?? false
+    durationMs: 12,
+    output: {
+      ok: true,
+      code: 'OK',
+      message: 'Tool call succeeded',
+      structuredContent: {
+        name,
+        args,
+        aborted: signal?.aborted ?? false
+      }
+    }
   }));
   const closeMock = vi.fn(async () => undefined);
 
@@ -72,9 +80,19 @@ describe('McpGatewayCore', () => {
 
     expect(connector.callToolMock).toHaveBeenCalledWith('echo', { text: 'hello' }, undefined);
     expect(output).toEqual({
-      name: 'echo',
-      args: { text: 'hello' },
-      aborted: false
+      backendId: 'a',
+      backendToolName: 'echo',
+      durationMs: 12,
+      output: {
+        ok: true,
+        code: 'OK',
+        message: 'Tool call succeeded',
+        structuredContent: {
+          name: 'echo',
+          args: { text: 'hello' },
+          aborted: false
+        }
+      }
     });
   });
 

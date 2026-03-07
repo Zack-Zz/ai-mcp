@@ -9,7 +9,25 @@ import type { BackendSpec, GatewayPolicyOptions } from './types.js';
 type GatewayConfig = {
   backends: BackendSpec[];
   tenantId?: string;
+  who?: string;
+  agent?: string;
+  runContext?: {
+    runId?: string;
+  };
   policy?: GatewayPolicyOptions;
+  capabilities?: {
+    defaultRiskLevel?: 'low' | 'medium' | 'high' | 'critical';
+    toolOverrides?: Record<
+      string,
+      {
+        riskLevel?: 'low' | 'medium' | 'high' | 'critical';
+        requiredPermissions?: string[];
+        tags?: string[];
+        version?: string;
+        visibility?: 'public' | 'internal' | 'hidden';
+      }
+    >;
+  };
   allowLegacyHttpSse?: boolean;
   auditFilePath?: string;
   auditHashSecret?: string;
@@ -18,6 +36,20 @@ type GatewayConfig = {
 const rateLimitPolicySchema = z.object({
   windowMs: z.number().int().positive(),
   maxRequests: z.number().int().positive()
+});
+const riskLevelSchema = z.enum(['low', 'medium', 'high', 'critical']);
+const conditionalAllowRuleSchema = z.object({
+  toolName: z.string().min(1).optional(),
+  minRiskLevel: riskLevelSchema.optional(),
+  allowedTenants: z.array(z.string().min(1)).optional(),
+  requiredTags: z.array(z.string().min(1)).optional()
+});
+const toolCapabilityOverrideSchema = z.object({
+  riskLevel: riskLevelSchema.optional(),
+  requiredPermissions: z.array(z.string().min(1)).optional(),
+  tags: z.array(z.string().min(1)).optional(),
+  version: z.string().min(1).optional(),
+  visibility: z.enum(['public', 'internal', 'hidden']).optional()
 });
 
 const httpBackendSchema = z.object({
@@ -42,10 +74,30 @@ const stdioBackendSchema = z.object({
 const gatewayConfigSchema = z.object({
   backends: z.array(z.union([httpBackendSchema, stdioBackendSchema])).min(1),
   tenantId: z.string().min(1).optional(),
+  who: z.string().min(1).optional(),
+  agent: z.string().min(1).optional(),
+  runContext: z
+    .object({
+      runId: z.string().min(1).optional()
+    })
+    .optional(),
   policy: z
     .object({
       allowTools: z.array(z.string()).optional(),
-      rateLimit: rateLimitPolicySchema.optional()
+      rateLimit: rateLimitPolicySchema.optional(),
+      riskPolicy: z
+        .object({
+          maxAllowedLevel: riskLevelSchema.optional(),
+          denyLevels: z.array(riskLevelSchema).optional()
+        })
+        .optional(),
+      conditionalAllow: z.array(conditionalAllowRuleSchema).optional()
+    })
+    .optional(),
+  capabilities: z
+    .object({
+      defaultRiskLevel: riskLevelSchema.optional(),
+      toolOverrides: z.record(z.string(), toolCapabilityOverrideSchema).optional()
     })
     .optional(),
   allowLegacyHttpSse: z.boolean().optional(),
@@ -136,7 +188,11 @@ async function main(): Promise<void> {
 
   const gateway = new McpGatewayServer(resolvedBackends, {
     ...(effectiveConfig.tenantId ? { tenantId: effectiveConfig.tenantId } : {}),
+    ...(effectiveConfig.who ? { who: effectiveConfig.who } : {}),
+    ...(effectiveConfig.agent ? { agent: effectiveConfig.agent } : {}),
+    ...(effectiveConfig.runContext ? { runContext: effectiveConfig.runContext } : {}),
     ...(effectiveConfig.policy ? { policy: effectiveConfig.policy } : {}),
+    ...(effectiveConfig.capabilities ? { capabilities: effectiveConfig.capabilities } : {}),
     ...(effectiveConfig.allowLegacyHttpSse !== undefined
       ? { allowLegacyHttpSse: effectiveConfig.allowLegacyHttpSse }
       : {}),

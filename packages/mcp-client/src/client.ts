@@ -71,8 +71,20 @@ export class McpClient {
           'text' in item &&
           typeof item.text === 'string'
       );
+
+      if ('isError' in response && response.isError === true) {
+        if (textBlock) {
+          throw new Error(textBlock.text);
+        }
+        throw new Error('Tool call failed');
+      }
+
       if (textBlock) {
-        return JSON.parse(textBlock.text) as ToolOutputMap[TName];
+        try {
+          return JSON.parse(textBlock.text) as ToolOutputMap[TName];
+        } catch {
+          throw new Error(textBlock.text);
+        }
       }
     }
 

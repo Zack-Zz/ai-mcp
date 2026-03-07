@@ -164,4 +164,21 @@ describe('mcp client', () => {
     );
     await client.close();
   });
+
+  it('throws MCP error text for isError tool responses', async () => {
+    mocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: 'text', text: 'MCP error -32010: rate limit exceeded' }]
+    });
+
+    const client = createClient({
+      transport: 'http',
+      endpoint: 'http://localhost:3200/mcp'
+    });
+
+    await expect(client.callTool('echo', { text: 'x' })).rejects.toThrowError(
+      'MCP error -32010: rate limit exceeded'
+    );
+    await client.close();
+  });
 });

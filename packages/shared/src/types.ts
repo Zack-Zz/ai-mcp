@@ -28,6 +28,62 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [k: string]: JsonValue };
 
+export const riskLevelSchema = z.enum(['low', 'medium', 'high', 'critical']);
+export type RiskLevel = z.infer<typeof riskLevelSchema>;
+
+export const artifactRefSchema = z.object({
+  uri: z.string().min(1),
+  mimeType: z.string().optional(),
+  name: z.string().optional(),
+  source: z.string().optional(),
+  owner: z.string().optional(),
+  createdAt: z.string().optional(),
+  retentionPolicy: z.string().optional(),
+  accessPolicy: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+export type ArtifactRef = z.infer<typeof artifactRefSchema>;
+
+export const standardToolResultSchema = z.object({
+  ok: z.boolean(),
+  code: z.string().min(1),
+  message: z.string(),
+  structuredContent: z.unknown().optional(),
+  content: z.array(z.unknown()).optional(),
+  artifacts: z.array(artifactRefSchema).optional(),
+  traceId: z.string().optional(),
+  runId: z.string().optional(),
+  taskId: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional()
+});
+export type StandardToolResult<T = unknown> = Omit<
+  z.infer<typeof standardToolResultSchema>,
+  'structuredContent'
+> & {
+  structuredContent?: T;
+};
+
+export const runContextSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().optional(),
+  traceId: z.string().optional(),
+  tenantId: z.string().optional(),
+  agentId: z.string().optional(),
+  startedAt: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+export type RunContext = z.infer<typeof runContextSchema>;
+
+export const stepContextSchema = z.object({
+  stepId: z.string().min(1),
+  runId: z.string().min(1),
+  taskId: z.string().optional(),
+  toolName: z.string().optional(),
+  startedAt: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+export type StepContext = z.infer<typeof stepContextSchema>;
+
 export type ToolName = 'echo' | 'time';
 export type ResourceName = 'server-info';
 export type PromptName = 'tool-guide';

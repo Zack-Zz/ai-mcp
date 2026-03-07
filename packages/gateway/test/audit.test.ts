@@ -21,6 +21,10 @@ describe('InMemoryAuditStore', () => {
       toolName: 'a__echo',
       traceId: 'trace-2',
       decision: 'deny',
+      who: 'user-1',
+      agent: 'agent-local',
+      capabilityRiskLevel: 'high',
+      policyReasonCode: 'RISK_LEVEL',
       reason: 'rate limit exceeded'
     });
 

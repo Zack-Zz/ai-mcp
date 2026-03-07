@@ -1,5 +1,23 @@
 import type { GatewayPolicyOptions, PolicyDecision, RequestContext } from './types.js';
 
+const riskScore: Record<RequestContext['riskLevel'], number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3
+};
+
+function isRiskHigherThan(
+  actual: RequestContext['riskLevel'],
+  target: RequestContext['riskLevel']
+) {
+  return riskScore[actual] > riskScore[target];
+}
+
+function isRiskAtLeast(actual: RequestContext['riskLevel'], min: RequestContext['riskLevel']) {
+  return riskScore[actual] >= riskScore[min];
+}
+
 export class GatewayPolicyEngine {
   private readonly allowTools: Set<string> | null;
   private readonly counters = new Map<string, { windowStart: number; count: number }>();
@@ -24,6 +42,49 @@ export class GatewayPolicyEngine {
         reason: `tool not allowed: ${ctx.toolName}`,
         reasonCode: 'ALLOWLIST'
       };
+    }
+
+    const denyLevels = this.options.riskPolicy?.denyLevels;
+    if (denyLevels && denyLevels.includes(ctx.riskLevel)) {
+      return {
+        allowed: false,
+        reason: `tool risk level denied: ${ctx.riskLevel}`,
+        reasonCode: 'RISK_LEVEL'
+      };
+    }
+
+    const maxAllowedLevel = this.options.riskPolicy?.maxAllowedLevel;
+    if (maxAllowedLevel && isRiskHigherThan(ctx.riskLevel, maxAllowedLevel)) {
+      return {
+        allowed: false,
+        reason: `tool risk level ${ctx.riskLevel} exceeds policy max ${maxAllowedLevel}`,
+        reasonCode: 'RISK_LEVEL'
+      };
+    }
+
+    for (const rule of this.options.conditionalAllow ?? []) {
+      if (rule.toolName && rule.toolName !== ctx.toolName) {
+        continue;
+      }
+      if (rule.minRiskLevel && !isRiskAtLeast(ctx.riskLevel, rule.minRiskLevel)) {
+        continue;
+      }
+
+      if (rule.allowedTenants && !rule.allowedTenants.includes(ctx.tenantId)) {
+        return {
+          allowed: false,
+          reason: `conditional allow denied for tenant ${ctx.tenantId}`,
+          reasonCode: 'CONDITIONAL_ALLOW'
+        };
+      }
+
+      if (rule.requiredTags && !rule.requiredTags.every((tag) => ctx.tags.includes(tag))) {
+        return {
+          allowed: false,
+          reason: `conditional allow denied: missing required tags for ${ctx.toolName}`,
+          reasonCode: 'CONDITIONAL_ALLOW'
+        };
+      }
     }
 
     if (!this.options.rateLimit) {

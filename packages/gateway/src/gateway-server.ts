@@ -3,7 +3,7 @@ import {
   type IncomingMessage,
   type ServerResponse
 } from 'node:http';
-import { createTraceId } from '@ai-mcp/shared';
+import { createTraceId, type StandardToolResult } from '@ai-mcp/shared';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -15,6 +15,8 @@ import { InMemoryAuditStore } from './audit.js';
 import { GatewayPolicyEngine } from './policy.js';
 import { resolveProtocolVersion } from './protocol.js';
 import { hashInputPayload } from './audit-hash.js';
+import { GatewayCapabilityRegistry } from './capability-registry.js';
+import { DownstreamConnectorError } from './connectors/base.js';
 
 const defaultInputSchema = z.object({}).passthrough();
 const HTTP_RPC_PATH = '/mcp';
@@ -29,8 +31,13 @@ export class McpGatewayServer {
   private readonly gatewayCore: McpGatewayCore;
   private readonly sdkServer: McpServer;
   private readonly policyEngine: GatewayPolicyEngine;
+  private readonly capabilityRegistry: GatewayCapabilityRegistry;
   private readonly auditStore: NonNullable<GatewayServerOptions['auditStore']>;
   private readonly tenantId: string;
+  private readonly who: string | undefined;
+  private readonly agent: string | undefined;
+  private readonly runId: string | undefined;
+  private readonly taskId: string | undefined;
   private readonly allowLegacyHttpSse: boolean;
   private readonly auditHashSecret: string | null;
   private connectedTransport: SdkTransport | null = null;
@@ -39,8 +46,13 @@ export class McpGatewayServer {
   public constructor(backends: BackendSpec[], options: GatewayServerOptions = {}) {
     this.gatewayCore = new McpGatewayCore(backends);
     this.policyEngine = new GatewayPolicyEngine(options.policy);
+    this.capabilityRegistry = new GatewayCapabilityRegistry(options.capabilities);
     this.auditStore = options.auditStore ?? new InMemoryAuditStore();
     this.tenantId = options.tenantId ?? 'default';
+    this.who = options.who;
+    this.agent = options.agent;
+    this.runId = options.runContext?.runId;
+    this.taskId = undefined;
     this.allowLegacyHttpSse = options.allowLegacyHttpSse ?? false;
     this.auditHashSecret = options.auditHashSecret ?? null;
     this.sdkServer = new McpServer({
@@ -56,6 +68,10 @@ export class McpGatewayServer {
     );
 
     for (const tool of mappedTools) {
+      const capability = this.capabilityRegistry.resolve(tool);
+      if (capability.visibility === 'hidden') {
+        continue;
+      }
       if (!visibleTools.has(tool.publicName)) {
         continue;
       }
@@ -63,11 +79,12 @@ export class McpGatewayServer {
       this.sdkServer.registerTool(
         tool.publicName,
         {
-          description: tool.description,
+          description: this.capabilityRegistry.toDescription(tool.description, capability),
           inputSchema: defaultInputSchema
         },
         async (input, extra) => {
           const traceId = String(extra.requestId ?? createTraceId());
+          const startedAt = Date.now();
           const inputHash =
             this.auditHashSecret !== null
               ? hashInputPayload(input, this.auditHashSecret)
@@ -76,7 +93,10 @@ export class McpGatewayServer {
             tenantId: this.tenantId,
             toolName: tool.publicName,
             traceId,
-            now: Date.now()
+            now: Date.now(),
+            riskLevel: capability.riskLevel,
+            tags: capability.tags,
+            requiredPermissions: capability.requiredPermissions
           });
 
           if (!decision.allowed) {
@@ -87,40 +107,83 @@ export class McpGatewayServer {
               toolName: tool.publicName,
               traceId,
               decision: 'deny',
+              ...(this.who ? { who: this.who } : {}),
+              ...(this.agent ? { agent: this.agent } : {}),
+              ...(this.runId ? { runId: this.runId } : {}),
+              ...(this.taskId ? { taskId: this.taskId } : {}),
+              capabilityRiskLevel: capability.riskLevel,
+              ...(decision.reasonCode ? { policyReasonCode: decision.reasonCode } : {}),
               ...(inputHash ? { inputHash } : {}),
               ...(decision.reason ? { reason: decision.reason } : {})
             });
             throw createGatewayPolicyError(decision.reasonCode, decision.reason ?? 'policy denied');
           }
 
-          let output: unknown;
           try {
-            output = await this.gatewayCore.callMappedTool(tool.publicName, input, extra.signal);
-          } catch (error) {
-            throw normalizeGatewayRuntimeError(error);
-          }
+            const callResult = await this.gatewayCore.callMappedTool(
+              tool.publicName,
+              input,
+              extra.signal
+            );
+            const output = ensureResultHasTrace(
+              callResult.output,
+              traceId,
+              this.runId,
+              this.taskId
+            );
 
-          await this.auditStore.record({
-            timestamp: new Date().toISOString(),
-            tenantId: this.tenantId,
-            action: 'tools/call',
-            toolName: tool.publicName,
-            traceId,
-            decision: 'allow',
-            ...(inputHash ? { inputHash } : {})
-          });
+            await this.auditStore.record({
+              timestamp: new Date().toISOString(),
+              tenantId: this.tenantId,
+              action: 'tools/call',
+              toolName: tool.publicName,
+              traceId,
+              decision: 'allow',
+              ...(this.who ? { who: this.who } : {}),
+              ...(this.agent ? { agent: this.agent } : {}),
+              ...(this.runId ? { runId: this.runId } : {}),
+              ...(this.taskId ? { taskId: this.taskId } : {}),
+              downstream: {
+                backendId: callResult.backendId,
+                backendToolName: callResult.backendToolName
+              },
+              durationMs: callResult.durationMs,
+              outputSummary: summarizeToolResult(output),
+              capabilityRiskLevel: capability.riskLevel,
+              ...(inputHash ? { inputHash } : {})
+            });
 
-          const serialized = JSON.stringify(output ?? {});
-          if (typeof output === 'object' && output !== null) {
+            const serialized = JSON.stringify(output);
             return {
               content: [{ type: 'text', text: serialized }],
               structuredContent: output as Record<string, unknown>
             };
+          } catch (error) {
+            const normalized = normalizeGatewayRuntimeError(error);
+            const errorCategory = extractErrorCategory(normalized);
+            await this.auditStore.record({
+              timestamp: new Date().toISOString(),
+              tenantId: this.tenantId,
+              action: 'tools/call',
+              toolName: tool.publicName,
+              traceId,
+              decision: 'allow',
+              ...(this.who ? { who: this.who } : {}),
+              ...(this.agent ? { agent: this.agent } : {}),
+              ...(this.runId ? { runId: this.runId } : {}),
+              ...(this.taskId ? { taskId: this.taskId } : {}),
+              downstream: {
+                backendId: tool.backendId,
+                backendToolName: tool.backendToolName
+              },
+              durationMs: Date.now() - startedAt,
+              capabilityRiskLevel: capability.riskLevel,
+              ...(inputHash ? { inputHash } : {}),
+              reason: normalized.message,
+              ...(errorCategory ? { errorCategory } : {})
+            });
+            throw normalized;
           }
-
-          return {
-            content: [{ type: 'text', text: serialized }]
-          };
         }
       );
     }
@@ -132,8 +195,7 @@ export class McpGatewayServer {
   }
 
   public startHttp(options: StartGatewayHttpOptions): ReturnType<typeof createHttpServer> {
-    const transport = new StreamableHTTPServerTransport();
-    this.transportReady = this.connectTransport(transport as SdkTransport);
+    const sessionTransports = new Map<string, StreamableHTTPServerTransport>();
 
     const path = options.path ?? HTTP_RPC_PATH;
     const server = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -147,6 +209,40 @@ export class McpGatewayServer {
         res.writeHead(404, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not Found' }));
         return;
+      }
+
+      const requestedSessionId = normalizeSessionHeader(req.headers['mcp-session-id']);
+      let transport: StreamableHTTPServerTransport;
+
+      if (requestedSessionId) {
+        const existing = sessionTransports.get(requestedSessionId);
+        if (!existing) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              id: 'unknown',
+              error: {
+                code: ErrorCode.InvalidParams,
+                message: `Session not found: ${requestedSessionId}`,
+                traceId: createTraceId()
+              }
+            })
+          );
+          return;
+        }
+        transport = existing;
+      } else {
+        let current: StreamableHTTPServerTransport;
+        current = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => createTraceId(),
+          onsessioninitialized: (sessionId) => {
+            sessionTransports.set(sessionId, current);
+          },
+          onsessionclosed: (sessionId) => {
+            sessionTransports.delete(sessionId);
+          }
+        });
+        transport = current;
       }
 
       // Node may expose repeated headers as string[], normalize to first value.
@@ -172,7 +268,10 @@ export class McpGatewayServer {
       }
 
       try {
-        if (this.transportReady) {
+        if (this.connectedTransport !== (transport as SdkTransport)) {
+          this.transportReady = this.connectTransport(transport as SdkTransport);
+        }
+        if (this.transportReady !== null) {
           await this.transportReady;
         }
         await transport.handleRequest(req, res);
@@ -224,8 +323,15 @@ export class McpGatewayServer {
   }
 }
 
+function normalizeSessionHeader(header: string | string[] | undefined): string | undefined {
+  if (Array.isArray(header)) {
+    return header[0];
+  }
+  return header;
+}
+
 function createGatewayPolicyError(
-  reasonCode: 'RATE_LIMIT' | 'ALLOWLIST' | undefined,
+  reasonCode: 'RATE_LIMIT' | 'ALLOWLIST' | 'RISK_LEVEL' | 'CONDITIONAL_ALLOW' | undefined,
   reason: string
 ): McpError {
   if (reasonCode === 'RATE_LIMIT') {
@@ -240,6 +346,30 @@ function createGatewayPolicyError(
 }
 
 function normalizeGatewayRuntimeError(error: unknown): McpError {
+  if (error instanceof DownstreamConnectorError) {
+    if (error.category === 'backend_timeout') {
+      return new McpError(BACKEND_TIMEOUT_ERROR_CODE, error.message, {
+        category: 'backend_timeout'
+      });
+    }
+
+    if (error.category === 'backend_unavailable') {
+      return new McpError(BACKEND_UNAVAILABLE_ERROR_CODE, error.message, {
+        category: 'backend_unavailable'
+      });
+    }
+
+    if (error.category === 'invalid_result') {
+      return new McpError(ErrorCode.InternalError, error.message, {
+        category: 'invalid_result'
+      });
+    }
+
+    return new McpError(ErrorCode.InternalError, error.message, {
+      category: 'backend_error'
+    });
+  }
+
   if (error instanceof McpError) {
     return error;
   }
@@ -265,4 +395,43 @@ function normalizeGatewayRuntimeError(error: unknown): McpError {
   }
 
   return new McpError(ErrorCode.InternalError, message);
+}
+
+function ensureResultHasTrace(
+  output: StandardToolResult,
+  traceId: string,
+  runId?: string,
+  taskId?: string
+): StandardToolResult {
+  return {
+    ...output,
+    ...(output.traceId ? {} : { traceId }),
+    ...(runId && !output.runId ? { runId } : {}),
+    ...(taskId && !output.taskId ? { taskId } : {})
+  };
+}
+
+function summarizeToolResult(output: StandardToolResult): string {
+  const summary = [output.code, output.message].filter((item) => item.length > 0).join(': ');
+  if (summary.length > 0) {
+    return summary.slice(0, 200);
+  }
+
+  if (output.structuredContent !== undefined) {
+    const serialized = JSON.stringify(output.structuredContent);
+    return serialized.slice(0, 200);
+  }
+
+  return output.ok ? 'ok' : 'failed';
+}
+
+function extractErrorCategory(error: McpError): string | undefined {
+  const details = (error as { data?: unknown }).data;
+  if (typeof details === 'object' && details !== null && 'category' in details) {
+    const category = (details as { category?: unknown }).category;
+    if (typeof category === 'string') {
+      return category;
+    }
+  }
+  return undefined;
 }

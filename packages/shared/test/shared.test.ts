@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { McpError, normalizeError, rpcRequestSchema, toolSchemas } from '../src/index.js';
+import {
+  McpError,
+  normalizeError,
+  rpcRequestSchema,
+  standardToolResultSchema,
+  toolSchemas
+} from '../src/index.js';
 
 describe('shared', () => {
   it('validates rpc request', () => {
@@ -26,5 +32,21 @@ describe('shared', () => {
   it('validates echo schema', () => {
     const output = toolSchemas.echo.output.parse({ text: 'hello' });
     expect(output.text).toBe('hello');
+  });
+
+  it('validates standard tool result schema with runtime metadata', () => {
+    const parsed = standardToolResultSchema.parse({
+      ok: true,
+      code: 'OK',
+      message: 'Tool call succeeded',
+      structuredContent: { text: 'hello' },
+      traceId: 'trace-1',
+      runId: 'run-1',
+      taskId: 'task-1',
+      artifacts: [{ uri: 'resource://ai-mcp/artifact/1', name: 'screenshot.png' }]
+    });
+    expect(parsed.ok).toBe(true);
+    expect(parsed.code).toBe('OK');
+    expect(parsed.runId).toBe('run-1');
   });
 });

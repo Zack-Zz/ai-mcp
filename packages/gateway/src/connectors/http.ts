@@ -2,40 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { DownstreamConnector } from './base.js';
+import { extractToolOutput, normalizeConnectorError, toStandardToolResult } from './result.js';
 
 type SdkTransport = Parameters<Client['connect']>[0];
-
-function extractToolOutput(result: unknown): unknown {
-  if (typeof result === 'object' && result !== null) {
-    const maybeStructured = (result as { structuredContent?: unknown }).structuredContent;
-    if (maybeStructured !== undefined) {
-      return maybeStructured;
-    }
-
-    const maybeContent = (result as { content?: unknown }).content;
-    if (Array.isArray(maybeContent)) {
-      const textBlock = maybeContent.find(
-        (item): item is { type: 'text'; text: string } =>
-          typeof item === 'object' &&
-          item !== null &&
-          'type' in item &&
-          item.type === 'text' &&
-          'text' in item &&
-          typeof item.text === 'string'
-      );
-
-      if (textBlock) {
-        try {
-          return JSON.parse(textBlock.text);
-        } catch {
-          return textBlock.text;
-        }
-      }
-    }
-  }
-
-  throw new Error('Invalid downstream tool result');
-}
 
 export class HttpConnector implements DownstreamConnector {
   private readonly client: Client;
@@ -61,21 +30,31 @@ export class HttpConnector implements DownstreamConnector {
     }));
   }
 
-  public async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+  public async callTool(name: string, args: unknown, signal?: AbortSignal) {
+    const start = Date.now();
     await this.ensureConnectedWithRetry();
-    const result = await this.client.callTool(
-      {
-        name,
-        arguments: (args ?? {}) as Record<string, unknown>
-      },
-      undefined,
-      {
-        timeout: this.timeoutMs,
-        ...(signal ? { signal } : {})
-      }
-    );
 
-    return extractToolOutput(result);
+    try {
+      const result = await this.client.callTool(
+        {
+          name,
+          arguments: (args ?? {}) as Record<string, unknown>
+        },
+        undefined,
+        {
+          timeout: this.timeoutMs,
+          ...(signal ? { signal } : {})
+        }
+      );
+
+      const output = toStandardToolResult(extractToolOutput(result));
+      return {
+        durationMs: Date.now() - start,
+        output
+      };
+    } catch (error) {
+      throw normalizeConnectorError(error);
+    }
   }
 
   public async close(): Promise<void> {
