@@ -31,13 +31,13 @@ pnpm build
 启动 HTTP Server：
 
 ```bash
-pnpm --filter @ai-mcp/mcp-server dev -- --transport http --port 3000
+pnpm --filter @ai-mcp/mcp-server dev --transport http --port 3000
 ```
 
 通过 CLI 调用 Tool：
 
 ```bash
-pnpm --filter @ai-mcp/mcp-client dev -- tools call echo --transport http --endpoint http://localhost:3000/mcp --json '{"text":"hello"}'
+pnpm --filter @ai-mcp/mcp-client dev tools call echo --transport http --endpoint http://localhost:3000/mcp --json '{"text":"hello"}'
 ```
 
 ## 架构约束

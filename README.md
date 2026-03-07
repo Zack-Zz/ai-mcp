@@ -31,13 +31,13 @@ pnpm build
 Run HTTP server:
 
 ```bash
-pnpm --filter @ai-mcp/mcp-server dev -- --transport http --port 3000
+pnpm --filter @ai-mcp/mcp-server dev --transport http --port 3000
 ```
 
 Call tool via CLI:
 
 ```bash
-pnpm --filter @ai-mcp/mcp-client dev -- tools call echo --transport http --endpoint http://localhost:3000/mcp --json '{"text":"hello"}'
+pnpm --filter @ai-mcp/mcp-client dev tools call echo --transport http --endpoint http://localhost:3000/mcp --json '{"text":"hello"}'
 ```
 
 ## Architecture Constraints

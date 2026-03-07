@@ -255,9 +255,6 @@ export class McpServer {
   }
 
   public startHttp(options: StartHttpOptions): ReturnType<typeof createHttpServer> {
-    const transport = new StreamableHTTPServerTransport();
-    this.transportReady = this.connectTransport(transport as SdkTransport);
-
     const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -272,9 +269,11 @@ export class McpServer {
       }
 
       try {
-        if (this.transportReady) {
-          await this.transportReady;
-        }
+        // SDK >=1.27 treats default streamable HTTP transport as stateless and single-use.
+        // Recreate transport per request to avoid reusing a stateless transport instance.
+        const transport = new StreamableHTTPServerTransport();
+        this.transportReady = this.connectTransport(transport as SdkTransport);
+        await this.transportReady;
         await transport.handleRequest(req, res);
       } catch (error) {
         const traceId = createTraceId();
