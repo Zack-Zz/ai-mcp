@@ -84,6 +84,12 @@ Gateway 回归检查：
 - `--auditFilePath <path>`
 - `--auditHashSecret <secret>`
 
+当前仅支持配置文件（无 CLI 覆盖参数）的字段：
+
+- `who`、`agent`、`runContext.runId`
+- `policy.riskPolicy`、`policy.conditionalAllow`
+- `capabilities.defaultRiskLevel`、`capabilities.toolOverrides`
+
 运维手册：`docs/gateway-operations.md`
 
 ## License

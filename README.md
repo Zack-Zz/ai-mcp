@@ -84,6 +84,12 @@ Gateway regression checks:
 - `--auditFilePath <path>`
 - `--auditHashSecret <secret>`
 
+Config-file-only fields (no CLI override flags) currently include:
+
+- `who`, `agent`, `runContext.runId`
+- `policy.riskPolicy`, `policy.conditionalAllow`
+- `capabilities.defaultRiskLevel`, `capabilities.toolOverrides`
+
 Operations runbook: `docs/gateway-operations.md`
 
 ## License
