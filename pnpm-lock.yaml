@@ -91,6 +91,9 @@ importers:
 
   packages/gateway:
     dependencies:
+      '@ai-mcp/mcp-client':
+        specifier: workspace:*
+        version: link:../mcp-client
       '@ai-mcp/shared':
         specifier: workspace:*
         version: link:../shared
@@ -121,6 +124,12 @@ importers:
 
   packages/shared:
     dependencies:
+      ajv:
+        specifier: 8.18.0
+        version: 8.18.0
+      ajv-formats:
+        specifier: 3.0.1
+        version: 3.0.1(ajv@8.18.0)
       zod:
         specifier: ^4.1.5
         version: 4.3.6

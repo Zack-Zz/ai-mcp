@@ -1,44 +1,58 @@
+import { closeHttpListener, trackHttpListener } from '@ai-mcp/shared';
 import {
   createServer as createHttpServer,
   type IncomingMessage,
   type ServerResponse
 } from 'node:http';
 import {
-  type JsonValue,
-  McpError,
+  createInvocationId,
   createTraceId,
+  isJsonObject,
+  McpError,
   normalizeError,
   rpcRequestSchema,
+  type InvocationContext,
+  type InvocationFault,
+  type InvocationOutcome,
+  type McpErrorShape,
   type PromptName,
   type ResourceName,
-  toolSchemas,
-  toolsCallRequestSchema,
-  type RpcRequest,
-  type ToolName,
-  type TransportKind
+  type RpcRequest
 } from '@ai-mcp/shared';
-import { McpServer as SdkMcpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { McpServer as SdkMcpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {
   Middleware,
-  MiddlewareNext,
   PromptDefinition,
   ResourceDefinition,
-  RpcOk,
   RpcOutput,
-  ServerContext,
   ToolDefinition
 } from './types.js';
-import { builtInPrompts, builtInResources, builtInTools } from './tools.js';
+import { builtInPrompts, builtInResources, echoTool, timeTool } from './tools.js';
+import { ToolRegistry, type RegistrySnapshot } from './tool-registry.js';
+import { ToolDispatcher } from './tool-dispatcher.js';
+import { createProtocolInstance } from './sdk-server-factory.js';
+import { DEFAULT_SHUTDOWN_GRACE_MS, McpHttpLifecycle } from './lifecycle/http-lifecycle.js';
 
 export type CreateServerOptions = {
   includeBuiltInTools?: boolean;
+  /** Per-call deadline covering validation, handler execution and cleanup. */
+  callTimeoutMs?: number;
+  tenantId?: string;
+  shutdownGraceMs?: number;
 };
 
 export type StartHttpOptions = {
   port: number;
+  /** Default stateless: one SDK pair per request. 'stateful' adds sessions. */
+  sessionMode?: 'stateful' | 'stateless';
+  sessionIdleTimeoutMs?: number;
+  maxSessions?: number;
+  maxBodySizeBytes?: number;
+  shutdownGraceMs?: number;
+  /** Policy hook over the initialize body protocolVersion. */
+  validateInitializeVersion?: (version: unknown) => { ok: true } | { ok: false; message: string };
 };
 
 export type StartSseOptions = {
@@ -47,27 +61,52 @@ export type StartSseOptions = {
 };
 
 const HTTP_RPC_PATH = '/mcp';
+const SERVER_INFO = { name: 'ai-mcp-server', version: '0.1.0' } as const;
 type SdkTransport = Parameters<SdkMcpServer['connect']>[0];
 
-export class McpServer {
-  private readonly sdkServer = new SdkMcpServer({
-    name: 'ai-mcp-server',
-    version: '0.1.0'
-  });
+/** Legacy four-code mapping used only by the handleRawRequest presenter. */
+function faultToLegacyError(fault: InvocationFault): McpErrorShape {
+  const code: McpErrorShape['code'] =
+    fault.category === 'invalid_params' || fault.category === 'invalid_request'
+      ? 'INVALID_PARAMS'
+      : fault.category === 'cancelled' || fault.category === 'backend_timeout'
+        ? 'TIMEOUT'
+        : fault.category === 'policy_denied'
+          ? 'UNAUTHORIZED'
+          : 'INTERNAL';
+  return {
+    code,
+    message: fault.message,
+    traceId: fault.traceId,
+    ...(fault.details !== undefined ? { details: fault.details as unknown } : {})
+  };
+}
 
-  private readonly tools = new Map<ToolName, ToolDefinition<unknown, unknown>>();
+/**
+ * Business facade: owns the registry, middlewares and resource/prompt
+ * definitions at service level. Protocol instances (SDK server + transport
+ * pairs) are created per connection/request and share this kernel.
+ */
+export class McpServer {
+  private readonly registry = new ToolRegistry();
+  private readonly middlewares: Middleware[] = [];
   private readonly resources = new Map<ResourceName, ResourceDefinition<unknown, unknown>>();
   private readonly prompts = new Map<PromptName, PromptDefinition<unknown, unknown>>();
-
-  private readonly middlewares: Middleware[] = [];
-  private connectedTransport: SdkTransport | null = null;
-  private transportReady: Promise<void> | null = null;
+  private readonly options: CreateServerOptions;
+  private readonly activeInstances = new Set<SdkMcpServer>();
+  private readonly shutdownController = new AbortController();
+  private dispatcher: ToolDispatcher | null = null;
+  private lifecycleState: 'building' | 'serving' | 'closed' = 'building';
+  private httpLifecycles: McpHttpLifecycle[] = [];
+  private readonly listeners: Array<ReturnType<typeof createHttpServer>> = [];
+  private shutdownGraceMs: number | undefined;
 
   public constructor(options: CreateServerOptions = {}) {
+    this.options = options;
+    this.shutdownGraceMs = options.shutdownGraceMs;
     if (options.includeBuiltInTools ?? true) {
-      for (const tool of builtInTools) {
-        this.registerTool(tool as ToolDefinition<unknown, unknown>);
-      }
+      this.registerTool(echoTool);
+      this.registerTool(timeTool);
       for (const resource of builtInResources) {
         this.registerResource(resource);
       }
@@ -78,130 +117,33 @@ export class McpServer {
   }
 
   public registerTool<TInput, TOutput>(tool: ToolDefinition<TInput, TOutput>): void {
-    if (this.tools.has(tool.name)) {
-      throw new McpError('INVALID_PARAMS', `Tool already registered: ${tool.name}`);
-    }
-
-    this.tools.set(tool.name, tool as ToolDefinition<unknown, unknown>);
-    this.sdkServer.registerTool(
-      tool.name,
-      {
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema
-      },
-      async (input, extra) => {
-        const traceId = String(extra.requestId ?? createTraceId());
-        await this.runMiddlewares({ traceId, method: 'tools/call' });
-
-        const output = await tool.handler(input as TInput, { traceId });
-        const validatedOutput = tool.outputSchema.safeParse(output);
-        if (!validatedOutput.success) {
-          throw new McpError('INTERNAL', `Invalid output from tool: ${tool.name}`, traceId, {
-            issues: validatedOutput.error.issues
-          });
-        }
-
-        const structuredContent = validatedOutput.data as Record<string, unknown>;
-        return {
-          content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-          structuredContent
-        };
-      }
-    );
+    this.assertNotClosed();
+    this.registry.register(tool);
   }
 
   public use(middleware: Middleware): void {
+    this.assertNotClosed();
     this.middlewares.push(middleware);
   }
 
   public registerResource<TParams, TOutput>(resource: ResourceDefinition<TParams, TOutput>): void {
+    this.assertNotClosed();
     if (this.resources.has(resource.name)) {
       throw new McpError('INVALID_PARAMS', `Resource already registered: ${resource.name}`);
     }
-
     this.resources.set(resource.name, resource as ResourceDefinition<unknown, unknown>);
-    const uri = `resource://ai-mcp/${resource.name}`;
-
-    this.sdkServer.registerResource(
-      resource.name,
-      uri,
-      { description: resource.description },
-      async (_uri, extra) => {
-        const traceId = String(extra.requestId ?? createTraceId());
-        await this.runMiddlewares({ traceId, method: 'resources/list' });
-
-        const output = await resource.handler({} as TParams, { traceId });
-        const validatedOutput = resource.outputSchema.safeParse(output);
-        if (!validatedOutput.success) {
-          throw new McpError(
-            'INTERNAL',
-            `Invalid output from resource: ${resource.name}`,
-            traceId,
-            {
-              issues: validatedOutput.error.issues
-            }
-          );
-        }
-
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: 'application/json',
-              text: JSON.stringify(validatedOutput.data)
-            }
-          ]
-        };
-      }
-    );
   }
 
   public registerPrompt<TArgs, TOutput>(prompt: PromptDefinition<TArgs, TOutput>): void {
+    this.assertNotClosed();
     if (this.prompts.has(prompt.name)) {
       throw new McpError('INVALID_PARAMS', `Prompt already registered: ${prompt.name}`);
     }
-
     this.prompts.set(prompt.name, prompt as PromptDefinition<unknown, unknown>);
-    this.sdkServer.registerPrompt(
-      prompt.name,
-      {
-        description: prompt.description
-      },
-      async (args, extra) => {
-        const traceId = String(extra.requestId ?? createTraceId());
-        await this.runMiddlewares({ traceId, method: 'prompts/list' });
-
-        const output = await prompt.handler((args ?? {}) as TArgs, { traceId });
-        const validatedOutput = prompt.outputSchema.safeParse(output);
-        if (!validatedOutput.success) {
-          throw new McpError('INTERNAL', `Invalid output from prompt: ${prompt.name}`, traceId, {
-            issues: validatedOutput.error.issues
-          });
-        }
-
-        const promptOutput = validatedOutput.data as { title?: string; content?: string };
-        return {
-          description: promptOutput.title,
-          messages: [
-            {
-              role: 'user',
-              content: {
-                type: 'text',
-                text: promptOutput.content ?? JSON.stringify(promptOutput)
-              }
-            }
-          ]
-        };
-      }
-    );
   }
 
   public listTools(): { name: string; description: string }[] {
-    return Array.from(this.tools.values()).map((tool) => ({
-      name: tool.name,
-      description: tool.description
-    }));
+    return this.registry.listBrief();
   }
 
   public listResources(): { name: ResourceName; description: string }[] {
@@ -218,8 +160,24 @@ export class McpServer {
     }));
   }
 
-  // Compatibility path for unit tests and legacy in-memory invocation.
+  /**
+   * Connects a brand-new protocol instance (SDK server + this transport) to
+   * the shared kernel. One instance owns one transport for its lifetime.
+   */
+  public async connect(transport: SdkTransport): Promise<void> {
+    const instance = this.createProtocolInstance();
+    try {
+      await instance.connect(transport);
+    } catch (error) {
+      this.activeInstances.delete(instance);
+      await instance.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Compatibility path for unit tests and legacy in-memory invocation. */
   public async handleRawRequest(raw: unknown): Promise<RpcOutput> {
+    this.assertNotClosed();
     const traceId = createTraceId();
     let parsed: RpcRequest;
     try {
@@ -235,27 +193,65 @@ export class McpServer {
     }
 
     try {
-      await this.runMiddlewares({ traceId, method: parsed.method });
-      const result = await this.handleRequest(parsed, traceId);
-      return {
-        id: parsed.id,
-        result
-      };
+      if (parsed.method === 'tools/call') {
+        const params = parseLegacyToolCallParams(parsed.params);
+        const outcome = await this.getDispatcher().invoke(
+          params.name,
+          params.input,
+          this.legacyInvocationContext(traceId)
+        );
+        return this.presentLegacyOutcome(parsed.id, outcome);
+      }
+
+      await this.runListMiddlewares({ traceId, method: parsed.method });
+      if (parsed.method === 'tools/list') {
+        return { id: parsed.id, result: { tools: this.listTools() } };
+      }
+      if (parsed.method === 'resources/list') {
+        return { id: parsed.id, result: { resources: this.listResources() } };
+      }
+      if (parsed.method === 'prompts/list') {
+        return { id: parsed.id, result: { prompts: this.listPrompts() } };
+      }
+      throw new McpError('INVALID_PARAMS', `Unsupported method: ${parsed.method}`, traceId);
     } catch (error) {
-      return {
-        id: parsed.id,
-        error: normalizeError(error, traceId)
-      };
+      return { id: parsed.id, error: normalizeError(error, traceId) };
     }
   }
 
   public startStdio(): void {
     const transport = new StdioServerTransport() as SdkTransport;
-    this.transportReady = this.connectTransport(transport);
+    void this.connect(transport);
   }
 
   public startHttp(options: StartHttpOptions): ReturnType<typeof createHttpServer> {
+    this.assertNotClosed();
+    if (options.shutdownGraceMs !== undefined) this.shutdownGraceMs = options.shutdownGraceMs;
+    const lifecycle = new McpHttpLifecycle({
+      createInstance: () => this.createProtocolInstance(),
+      sessionMode: options.sessionMode ?? 'stateless',
+      ...(options.sessionIdleTimeoutMs !== undefined
+        ? { sessionIdleTimeoutMs: options.sessionIdleTimeoutMs }
+        : {}),
+      ...(options.maxSessions !== undefined ? { maxSessions: options.maxSessions } : {}),
+      ...(options.maxBodySizeBytes !== undefined
+        ? { maxBodySizeBytes: options.maxBodySizeBytes }
+        : {}),
+      ...(options.validateInitializeVersion !== undefined
+        ? { validateInitializeVersion: options.validateInitializeVersion }
+        : {}),
+      onInstanceClosed: (instance) => {
+        this.activeInstances.delete(instance);
+      }
+    });
+    this.httpLifecycles.push(lifecycle);
+
     const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+      if (this.lifecycleState === 'closed') {
+        res.writeHead(503, { connection: 'close' });
+        res.end();
+        return;
+      }
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok' }));
@@ -269,37 +265,32 @@ export class McpServer {
       }
 
       try {
-        // SDK >=1.27 treats default streamable HTTP transport as stateless and single-use.
-        // Recreate transport per request to avoid reusing a stateless transport instance.
-        const transport = new StreamableHTTPServerTransport();
-        this.transportReady = this.connectTransport(transport as SdkTransport);
-        await this.transportReady;
-        await transport.handleRequest(req, res);
-      } catch (error) {
-        const traceId = createTraceId();
-        res.writeHead(500, { 'content-type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            id: 'unknown',
-            error: {
-              code: 'INTERNAL',
-              message: error instanceof Error ? error.message : String(error),
-              traceId
-            }
-          })
-        );
+        await lifecycle.handleRequest(req, res);
+      } catch {
+        if (!res.headersSent && !res.destroyed) {
+          res.writeHead(500);
+          res.end();
+        }
       }
     });
 
+    trackHttpListener(httpServer);
     httpServer.listen(options.port);
+    this.listeners.push(httpServer);
     return httpServer;
   }
 
   public startSse(options: StartSseOptions): ReturnType<typeof createHttpServer> {
+    this.assertNotClosed();
     const path = options.path ?? '/sse';
-    const sseTransports = new Map<string, SSEServerTransport>();
+    const sseEntries = new Map<string, { transport: SSEServerTransport; instance: SdkMcpServer }>();
 
     const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+      if (this.lifecycleState === 'closed') {
+        res.writeHead(503, { connection: 'close' });
+        res.end();
+        return;
+      }
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok' }));
@@ -307,16 +298,19 @@ export class McpServer {
       }
 
       if (req.method === 'GET' && req.url === path) {
+        // One SSE session owns its own SDK server/transport pair.
         const transport = new SSEServerTransport(`${path}/call`, res);
-        sseTransports.set(transport.sessionId, transport);
+        const instance = this.createProtocolInstance();
+        sseEntries.set(transport.sessionId, { transport, instance });
         transport.onclose = () => {
-          sseTransports.delete(transport.sessionId);
+          sseEntries.delete(transport.sessionId);
+          this.activeInstances.delete(instance);
         };
 
         try {
-          await this.connectTransport(transport as SdkTransport);
+          await instance.connect(transport as SdkTransport);
         } catch (error) {
-          sseTransports.delete(transport.sessionId);
+          sseEntries.delete(transport.sessionId);
           res.writeHead(500, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
@@ -334,14 +328,14 @@ export class McpServer {
           return;
         }
 
-        const transport = sseTransports.get(sessionId);
-        if (!transport) {
+        const entry = sseEntries.get(sessionId);
+        if (!entry) {
           res.writeHead(404, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ error: 'SSE session not found' }));
           return;
         }
 
-        await transport.handlePostMessage(req, res);
+        await entry.transport.handlePostMessage(req, res);
         return;
       }
 
@@ -349,81 +343,107 @@ export class McpServer {
       res.end(JSON.stringify({ error: 'Not Found' }));
     });
 
+    trackHttpListener(httpServer);
     httpServer.listen(options.port);
+    this.listeners.push(httpServer);
     return httpServer;
   }
 
-  public supports(transport: TransportKind): boolean {
+  /** Protocol instances currently owned (sessions, requests, stdio, SSE). */
+  public get activeProtocolInstanceCount(): number {
+    return this.activeInstances.size;
+  }
+
+  public supports(transport: 'stdio' | 'http' | 'sse'): boolean {
     return ['stdio', 'http', 'sse'].includes(transport);
   }
 
-  private async connectTransport(transport: SdkTransport): Promise<void> {
-    if (this.connectedTransport) {
-      await this.sdkServer.close();
-      this.connectedTransport = null;
-    }
-
-    await this.sdkServer.connect(transport);
-    this.connectedTransport = transport;
+  /** Closes all protocol instances and listeners; idempotent and terminal. */
+  public close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = this.closeService();
+    return this.closePromise;
   }
 
-  private async handleRequest(request: RpcRequest, traceId: string): Promise<RpcOk['result']> {
-    if (request.method === 'tools/list') {
-      return {
-        tools: this.listTools()
-      };
-    }
-
-    if (request.method === 'resources/list') {
-      return {
-        resources: this.listResources()
-      };
-    }
-
-    if (request.method === 'prompts/list') {
-      return {
-        prompts: this.listPrompts()
-      };
-    }
-
-    if (request.method !== 'tools/call') {
-      throw new McpError('INVALID_PARAMS', `Unsupported method: ${request.method}`, traceId);
-    }
-
-    const params = toolsCallRequestSchema.parse(request.params);
-    const tool = this.tools.get(params.name);
-
-    if (!tool) {
-      throw new McpError('INVALID_PARAMS', `Tool not found: ${params.name}`, traceId, {
-        toolName: params.name
-      });
-    }
-
-    const input = this.validateInput(params.name, params.input, traceId);
-    const output = await tool.handler(input, { traceId });
-    const validatedOutput = tool.outputSchema.safeParse(output);
-
-    if (!validatedOutput.success) {
-      throw new McpError('INTERNAL', `Invalid output from tool: ${params.name}`, traceId, {
-        issues: validatedOutput.error.issues
-      });
-    }
-
-    return { output: validatedOutput.data as JsonValue | Record<string, JsonValue> };
+  private async closeService(): Promise<void> {
+    this.lifecycleState = 'closed';
+    this.shutdownController.abort(new DOMException('Server shutting down', 'AbortError'));
+    const graceMs = this.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+    const listeners = this.listeners.splice(0);
+    const closingListeners = listeners.map((listener) => closeHttpListener(listener, graceMs));
+    await Promise.allSettled(this.httpLifecycles.map((lifecycle) => lifecycle.close(graceMs)));
+    this.httpLifecycles = [];
+    // Close protocol instances BEFORE listeners: instance close terminates
+    // live response streams (SSE/GET), which is what lets listener.close()
+    // ever complete; the reverse order deadlocks on open sockets.
+    const instances = Array.from(this.activeInstances);
+    this.activeInstances.clear();
+    await Promise.allSettled(instances.map((instance) => instance.close()));
+    listeners.forEach((listener) => listener.closeIdleConnections());
+    await Promise.allSettled(closingListeners);
   }
 
-  private validateInput(name: ToolName, input: unknown, traceId: string): unknown {
-    const schema = toolSchemas[name].input;
-    const parsed = schema.safeParse(input);
-    if (!parsed.success) {
-      throw new McpError('INVALID_PARAMS', `Invalid input for tool: ${name}`, traceId, {
-        issues: parsed.error.issues
-      });
-    }
-    return parsed.data;
+  private closePromise: Promise<void> | undefined;
+
+  private createProtocolInstance(): SdkMcpServer {
+    this.assertNotClosed();
+    this.lifecycleState = 'serving';
+    const snapshot = this.registry.freeze();
+    const instance = createProtocolInstance({
+      snapshot,
+      dispatcher: this.getDispatcher(),
+      resources: Array.from(this.resources.values()),
+      prompts: Array.from(this.prompts.values()),
+      serverInfo: { ...SERVER_INFO },
+      serviceSignal: this.shutdownController.signal,
+      ...(this.options.tenantId !== undefined ? { tenantId: this.options.tenantId } : {}),
+      ...(this.options.callTimeoutMs !== undefined
+        ? { callTimeoutMs: this.options.callTimeoutMs }
+        : {})
+    });
+    instance.server.onclose = () => this.activeInstances.delete(instance);
+    this.activeInstances.add(instance);
+    return instance;
   }
 
-  private async runMiddlewares(ctx: ServerContext): Promise<void> {
+  private getDispatcher(): ToolDispatcher {
+    if (!this.dispatcher) {
+      const snapshot: RegistrySnapshot = this.registry.freeze();
+      this.dispatcher = new ToolDispatcher(snapshot, this.middlewares);
+    }
+    return this.dispatcher;
+  }
+
+  private legacyInvocationContext(traceId: string): InvocationContext {
+    return {
+      invocationId: createInvocationId(),
+      traceId,
+      peerEra: 'legacy',
+      protocolVersion: '2025-03-26',
+      deadlineAt:
+        (this.options.callTimeoutMs ?? 60_000) > 0
+          ? Date.now() + (this.options.callTimeoutMs ?? 60_000)
+          : Number.MAX_SAFE_INTEGER,
+      signal: this.shutdownController.signal,
+      actor: { tenantId: this.options.tenantId ?? 'default' }
+    };
+  }
+
+  private presentLegacyOutcome(id: string, outcome: InvocationOutcome): RpcOutput {
+    if (outcome.kind === 'success') {
+      const output = outcome.result.structuredContent;
+      return {
+        id,
+        result: { output: isJsonObject(output) ? output : {} }
+      };
+    }
+    return { id, error: faultToLegacyError(outcome.fault) };
+  }
+
+  private async runListMiddlewares(ctx: {
+    traceId: string;
+    method: 'tools/list' | 'resources/list' | 'prompts/list';
+  }): Promise<void> {
     let index = -1;
     const runner = async (position: number): Promise<void> => {
       if (position <= index) {
@@ -434,11 +454,27 @@ export class McpServer {
       if (!middleware) {
         return;
       }
-      const next: MiddlewareNext = async () => runner(position + 1);
-      await middleware(ctx, next);
+      await middleware(ctx, async () => runner(position + 1));
     };
     await runner(0);
   }
+
+  private assertNotClosed(): void {
+    if (this.lifecycleState === 'closed') {
+      throw new McpError('INVALID_PARAMS', 'Server is closed');
+    }
+  }
+}
+
+function parseLegacyToolCallParams(params: unknown): { name: string; input: unknown } {
+  if (!isJsonObject(params)) {
+    throw new McpError('INVALID_PARAMS', 'Invalid tools/call params');
+  }
+  const name = params.name;
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new McpError('INVALID_PARAMS', 'Tool name must be a non-empty string');
+  }
+  return { name, input: params.input };
 }
 
 export function createServer(options: CreateServerOptions = {}): McpServer {

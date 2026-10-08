@@ -4,7 +4,8 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@ai-mcp/shared": ["../shared/src/index.ts"]
+      "@ai-mcp/shared": ["../shared/src/index.ts"],
+      "@ai-mcp/mcp-client": ["../mcp-client/src/index.ts"]
     }
   },
   "include": ["src", "test"]

@@ -1,5 +1,9 @@
 # ai-mcp 平台设计文档
 
+现状复核：2026-10-01，`main@8dad112`。本文包含长期平台设想，不代表所有内容已实现。当前阶段以独立的 [MCP 底座设计](./superpowers/specs/2026-10-01-mcp-foundation-design.md) 与 [实施路线](./superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md) 为准，两者待用户确认；本轮未运行测试或真实客户端。
+
+当下官方稳定实践的补充方案见 [架构设计](./superpowers/specs/2026-10-01-mcp-foundation-architecture.md) 与 [详细改造设计](./superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md)：先做 P0 版本无关内核和兼容修复，再单独确认 SDK v2 / 2026-07-28 的 P1 迁移。本文旧会话与错误码方案不能直接套用于现代协议。
+
 ## 1. 文档目标
 
 本文档用于定义 `ai-mcp` 的平台定位、架构分层、核心模块、协议抽象、治理能力、扩展机制与实施路线，用于支撑多个 AI Agent 通过 MCP（Model Context Protocol）访问统一的工具、资源、Prompt 与下游系统。
@@ -61,11 +65,11 @@
 当前短板：
 
 - 内置能力仍偏 demo，缺乏平台级能力目录
-- 缺少面向 Agent 的统一结果模型
-- 缺少 artifact / resource 的系统化建模
-- 现有策略引擎仍为基础版（allowlist + rate limit），缺少条件策略与风险分级
+- 已有 `StandardToolResult`，但原生 `isError`、结构化结果和无效结果的处理仍有缺陷
+- 已有 `ArtifactRef`；产物保存、Resource 聚合等系统能力仍未实现
+- 已有 allowlist、rate limit、风险分级和条件策略；本阶段复用，不重新建设整套策略平台
 - 已支持多下游工具聚合与 `backend__tool` 命名空间，但缺少 Resource/Prompt 聚合治理
-- 缺少执行态对象体系化建模（Task / Run / Step / Artifact / AuditEvent）
+- 已有 `RunContext`、`StepContext` 和扩展 `AuditEvent`；调用级 run/task/trace 贯通不完整，Task 执行系统不属本阶段
 
 因此，当前 `ai-mcp` 更接近：
 
@@ -81,12 +85,18 @@
   - 网关工具聚合与命名空间映射（`backend__tool`）
   - 基础策略（allowlist + rate limit）
   - 基础审计（内存/JSONL）
+  - 统一结果与产物引用类型（StandardToolResult / ArtifactRef）
+  - 风险分级、条件策略与 capability registry（版本、权限元数据、可见性）
+  - RunContext / StepContext 类型与审计字段扩展
 - 未完成（平台化能力）：
-  - 统一结果模型（含 artifact/run/task 语义）
-  - 风险分级与条件策略
-  - capability registry（版本、权限、可见性）
-  - runtime metadata 贯通
+  - ~~脱离 echo/time 枚举的通用工具注册与动态 Client~~（P0 已实现：任意合法业务名注册、`discoverTools`/`callToolResult`/`callValidatedTool`）
+  - ~~Gateway schema/annotations/元数据完整传递与包装结果的 outputSchema~~（P0 已实现：完整 descriptor 流转 + 可独立校验的包装 outputSchema）
+  - ~~原生 MCP 与项目结果/错误契约正确转换~~（P0 已实现：isError 优先、standard ok:false 上行失败、数字码进 JSON-RPC error.data）
+  - ~~HTTP/SSE 的 SDK server 与 transport 独立所有权、完整资源关闭~~（P0 已实现：每会话/每请求独立实例、幂等 close、TTL/maxSessions/重复 header 防护）
+  - 调用级 runtime metadata 贯通
   - Resource/Prompt 聚合与治理
+
+以上为源码复核，不是当前运行验收结论。下文 Phase A/B 中已经有实现的类型、策略和 registry 不应再次计作从零开发；本阶段只建设通用 MCP 底座，长期平台及 Agent 协作能力另行确认。
 
 ---
 

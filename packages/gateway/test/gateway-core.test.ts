@@ -1,3 +1,4 @@
+import { isJsonObject } from '@ai-mcp/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { McpGatewayCore } from '../src/gateway-core.js';
 import type { BackendSpec } from '../src/types.js';
@@ -10,20 +11,45 @@ type MockConnector = DownstreamConnector & {
 };
 
 function createMockConnector(tools: { name: string; description: string }[]): MockConnector {
-  const listToolsMock = vi.fn(async () => tools);
-  const callToolMock = vi.fn(async (name: string, args: unknown, signal?: AbortSignal) => ({
-    durationMs: 12,
-    output: {
-      ok: true,
-      code: 'OK',
-      message: 'Tool call succeeded',
-      structuredContent: {
-        name,
-        args,
-        aborted: signal?.aborted ?? false
+  const listToolsMock = vi.fn(async () =>
+    tools.map((tool) => ({
+      ...tool,
+      descriptor: {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: { type: 'object' }
       }
+    }))
+  );
+  const callToolMock = vi.fn(
+    async (
+      name: string,
+      args: unknown,
+      signal?: AbortSignal,
+      context?: { traceId?: string; runId?: string; taskId?: string }
+    ) => {
+      const payload = {
+        name,
+        args: isJsonObject(args) ? args : {},
+        aborted: signal?.aborted ?? false,
+        traceId: context?.traceId ?? null
+      };
+      return {
+        durationMs: 12,
+        output: {
+          ok: true,
+          code: 'OK',
+          message: 'Tool call succeeded',
+          structuredContent: payload
+        },
+        native: {
+          content: [{ type: 'text', text: 'ok' }],
+          structuredContent: payload,
+          isError: false
+        }
+      };
     }
-  }));
+  );
   const closeMock = vi.fn(async () => undefined);
 
   return {
@@ -33,8 +59,13 @@ function createMockConnector(tools: { name: string; description: string }[]): Mo
     async listTools() {
       return await listToolsMock();
     },
-    async callTool(name: string, args: unknown, signal?: AbortSignal) {
-      return await callToolMock(name, args, signal);
+    async callTool(
+      name: string,
+      args: unknown,
+      signal?: AbortSignal,
+      context?: { traceId?: string; runId?: string; taskId?: string }
+    ) {
+      return await callToolMock(name, args, signal, context);
     },
     async close() {
       await closeMock();
@@ -78,8 +109,13 @@ describe('McpGatewayCore', () => {
 
     const output = await gateway.callMappedTool('a__echo', { text: 'hello' });
 
-    expect(connector.callToolMock).toHaveBeenCalledWith('echo', { text: 'hello' }, undefined);
-    expect(output).toEqual({
+    expect(connector.callToolMock).toHaveBeenCalledWith(
+      'echo',
+      { text: 'hello' },
+      undefined,
+      expect.objectContaining({ resultContract: 'legacy-auto', traceId: expect.any(String) })
+    );
+    expect(output).toMatchObject({
       backendId: 'a',
       backendToolName: 'echo',
       durationMs: 12,
@@ -90,8 +126,17 @@ describe('McpGatewayCore', () => {
         structuredContent: {
           name: 'echo',
           args: { text: 'hello' },
-          aborted: false
+          aborted: false,
+          traceId: expect.any(String)
         }
+      },
+      native: {
+        isError: false,
+        structuredContent: { name: 'echo', args: { text: 'hello' } }
+      },
+      entry: {
+        publicName: 'a__echo',
+        backendToolName: 'echo'
       }
     });
   });
@@ -114,6 +159,64 @@ describe('McpGatewayCore', () => {
     expect(connector.callToolMock).toHaveBeenCalledTimes(1);
     const signalArg = connector.callToolMock.mock.calls[0]?.[2] as AbortSignal;
     expect(signalArg.aborted).toBe(true);
+  });
+
+  it('closes every connector even when one close fails, and is idempotent', async () => {
+    const backends: BackendSpec[] = [
+      { id: 'ok', transport: 'http', endpoint: 'http://backend-ok/mcp' },
+      { id: 'bad', transport: 'http', endpoint: 'http://backend-bad/mcp' }
+    ];
+
+    const okConnector = createMockConnector([{ name: 'echo', description: 'Echo' }]);
+    const badConnector = createMockConnector([{ name: 'time', description: 'Time' }]);
+    badConnector.closeMock.mockRejectedValueOnce(new Error('close failed'));
+
+    const gateway = new McpGatewayCore(backends, (backend) =>
+      backend.id === 'ok' ? okConnector : badConnector
+    );
+
+    await gateway.close();
+    await gateway.close();
+    // Idempotent close: each connector closed exactly once despite the
+    // failing one; the failure never blocked the other.
+    expect(okConnector.closeMock).toHaveBeenCalledTimes(1);
+    expect(badConnector.closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates input against the catalog schema before calling the connector', async () => {
+    const connector = createMockConnector([]);
+
+    // The mock descriptor advertises a permissive object schema; register a
+    // stricter one through the descriptor returned by the connector.
+    const strict = {
+      ...connector,
+      listTools: async () => [
+        {
+          name: 'strict.tool',
+          description: 'strict',
+          descriptor: {
+            name: 'strict.tool',
+            description: 'strict',
+            inputSchema: {
+              type: 'object',
+              properties: { q: { type: 'string' } },
+              required: ['q'],
+              additionalProperties: false
+            }
+          }
+        }
+      ]
+    };
+    const strictGateway = new McpGatewayCore(
+      [{ id: 'a', transport: 'http', endpoint: 'http://backend-a/mcp' }],
+      () => strict as unknown as MockConnector
+    );
+    await strictGateway.refreshTools();
+
+    await expect(
+      strictGateway.callMappedTool('a__strict_tool', { wrong: 1 })
+    ).rejects.toMatchObject({ category: 'invalid_request' });
+    expect(connector.callToolMock).not.toHaveBeenCalled();
   });
 
   it('throws when mapped tool does not exist', async () => {

@@ -1,4 +1,14 @@
-import type { RiskLevel, RunContext, StandardToolResult, TransportKind } from '@ai-mcp/shared';
+import type {
+  JsonObject,
+  NativeToolResult,
+  ResolvedResultContract,
+  ResultContract,
+  RiskLevel,
+  RunContext,
+  StandardToolResult,
+  ToolDescriptor,
+  TransportKind
+} from '@ai-mcp/shared';
 
 export type SupportedProtocolVersion = '2025-11-25' | '2025-03-26' | '2024-11-05';
 
@@ -10,6 +20,7 @@ export type HttpBackendSpec = {
   endpoint: string;
   timeoutMs?: number;
   protocolVersion?: SupportedProtocolVersion;
+  resultContract?: ResultContract;
 };
 
 export type StdioBackendSpec = {
@@ -21,6 +32,7 @@ export type StdioBackendSpec = {
   cwd?: string;
   timeoutMs?: number;
   protocolVersion?: SupportedProtocolVersion;
+  resultContract?: ResultContract;
 };
 
 export type BackendSpec = HttpBackendSpec | StdioBackendSpec;
@@ -30,6 +42,8 @@ export type GatewayTool = {
   backendId: string;
   backendToolName: string;
   description: string;
+  inputSchema?: ToolDescriptor['inputSchema'];
+  outputSchema?: ToolDescriptor['outputSchema'];
   metadata?: Partial<ToolCapabilityMetadata>;
 };
 
@@ -43,13 +57,24 @@ export type GatewayServerOptions = {
   policy?: GatewayPolicyOptions;
   capabilities?: GatewayCapabilityOptions;
   auditStore?: AuditStore;
+  shutdownGraceMs?: number;
   allowLegacyHttpSse?: boolean;
   auditHashSecret?: string;
+  resultContracts?: {
+    toolOverrides?: Record<string, ResolvedResultContract>;
+  };
+  /** Test/embedding seam replacing default connector construction. */
+  connectorFactory?: import('./gateway-core.js').ConnectorFactory;
 };
 
 export type StartGatewayHttpOptions = {
   port: number;
   path?: string;
+  /** Gateway default is stateful (sessions); 'stateless' serves per request. */
+  sessionMode?: 'stateful' | 'stateless';
+  sessionIdleTimeoutMs?: number;
+  maxSessions?: number;
+  maxBodySizeBytes?: number;
 };
 
 export type RateLimitPolicy = {
@@ -112,7 +137,10 @@ export type MappedToolCallResult = {
   backendToolName: string;
   durationMs: number;
   output: StandardToolResult;
+  native: NativeToolResult;
 };
+
+export type AuditOutcome = 'success' | 'tool_error' | 'protocol_error' | 'cancelled';
 
 export type AuditEvent = {
   timestamp: string;
@@ -121,6 +149,15 @@ export type AuditEvent = {
   toolName: string;
   traceId: string;
   decision: 'allow' | 'deny';
+  /** Policy decision and execution outcome are recorded separately. */
+  outcome?: AuditOutcome;
+  resultCode?: string;
+  executionDisposition?: 'not_started' | 'completed' | 'unknown';
+  invocationId?: string;
+  requestId?: string | number;
+  mcpSessionId?: string;
+  protocolVersion?: string;
+  downstreamTraceId?: string;
   who?: string;
   agent?: string;
   runId?: string;
@@ -140,4 +177,8 @@ export type AuditEvent = {
 
 export type AuditStore = {
   record(event: AuditEvent): Promise<void>;
+  /** Service-owned stores may flush queued writes during shutdown. */
+  close?(): Promise<void>;
 };
+
+export type { JsonObject };

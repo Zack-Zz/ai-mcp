@@ -5,6 +5,10 @@
 日期：2026-03-02  
 适用仓库：`/Users/zhouze/Documents/git-projects/ai-mcp`
 
+2026-10-01 现状复核（`main@8dad112`）：本文是历史设计，不能据“可实施版”标题推断会话隔离、schema 传递或机器错误码已完整实现。当前有 StandardToolResult、能力 registry、风险/条件策略与扩展审计；Gateway 仍丢弃下游 schema、共享一个 SDK server 切换会话 transport，且高层 SDK 会将部分抛出错误变成文本 isError。协议矩阵当前也未断言实际协商版本。详见待确认的 [MCP 底座设计](./superpowers/specs/2026-10-01-mcp-foundation-design.md) 和 [实施路线](./superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md)。本阶段保留现有四包与 JSONL 审计，不执行本文的包拆分、数据库、OAuth 或企业平台方案。
+
+新增 [架构设计](./superpowers/specs/2026-10-01-mcp-foundation-architecture.md) 与 [详细改造设计](./superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md) 区分当前 legacy 与 2026-07-28 modern 模型。本文列出的 -320xx Gateway 数字码仅作旧上游兼容；现代错误空间已有不同保留定义，必须按版本映射。SDK v2 与现代协议启用是两个独立门槛，均需真实验证。
+
 ## 1. 目标与原则
 
 本设计用于在 `ai-mcp` 基础上重构为生产可用的 MCP Gateway（上游扮演 MCP Server、下游扮演 MCP Client），并保留 demo server 能力。
@@ -297,3 +301,10 @@ MVP 只保留必要实体：
 - MCP 规范：https://spec.modelcontextprotocol.io
 - TypeScript SDK 仓库：https://github.com/modelcontextprotocol/typescript-sdk
 - JSON-RPC 2.0：https://www.jsonrpc.org/specification
+
+## P0 落地补充（2026-10-01）
+
+- 工具目录改为冻结快照：descriptor（schema/annotations/title/\_meta/execution）全量保留，validator/invoker/路由同源同 revision；`org.ai-mcp/downstream-tool` 记录来源。
+- 公开 outputSchema 描述实际包装后的 StandardToolResult（`createStandardView`，引用作用域重定位到包装内部），可用独立 validator 验证真实返回。
+- 结果契约三态：`native-json/v1`（包装）、`standard/v1`（透传不二包）、`legacy-auto`（仅无 schema 或已登记 echo/time 兼容形态，其余报 `RESULT_CONTRACT_AMBIGUOUS`）。
+- 每会话/每请求独占 SDK server+transport；策略数字码在 JSON-RPC error.code/data；审计事件携带 invocationId/outcome/resultCode/downstreamTraceId。

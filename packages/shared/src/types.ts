@@ -26,7 +26,8 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { [k: string]: JsonValue };
+export type JsonObject = { [k: string]: JsonValue };
+export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
 
 export const riskLevelSchema = z.enum(['low', 'medium', 'high', 'critical']);
 export type RiskLevel = z.infer<typeof riskLevelSchema>;

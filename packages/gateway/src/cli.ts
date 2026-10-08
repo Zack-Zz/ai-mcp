@@ -11,6 +11,9 @@ type GatewayConfig = {
   tenantId?: string;
   who?: string;
   agent?: string;
+  resultContracts?: {
+    toolOverrides?: Record<string, 'native-json/v1' | 'standard/v1'>;
+  };
   runContext?: {
     runId?: string;
   };
@@ -31,6 +34,11 @@ type GatewayConfig = {
   allowLegacyHttpSse?: boolean;
   auditFilePath?: string;
   auditHashSecret?: string;
+  httpSession?: {
+    sessionMode?: 'stateful' | 'stateless';
+    sessionIdleTimeoutMs?: number;
+    maxSessions?: number;
+  };
 };
 
 const rateLimitPolicySchema = z.object({
@@ -52,12 +60,14 @@ const toolCapabilityOverrideSchema = z.object({
   visibility: z.enum(['public', 'internal', 'hidden']).optional()
 });
 
+const resultContractSchema = z.enum(['native-json/v1', 'standard/v1', 'legacy-auto']);
 const httpBackendSchema = z.object({
   id: z.string().min(1),
   transport: z.literal('http'),
   endpoint: z.string().url(),
   timeoutMs: z.number().int().positive().optional(),
-  protocolVersion: z.enum(['2025-11-25', '2025-03-26', '2024-11-05']).optional()
+  protocolVersion: z.enum(['2025-11-25', '2025-03-26', '2024-11-05']).optional(),
+  resultContract: resultContractSchema.optional()
 });
 
 const stdioBackendSchema = z.object({
@@ -68,7 +78,8 @@ const stdioBackendSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   cwd: z.string().optional(),
   timeoutMs: z.number().int().positive().optional(),
-  protocolVersion: z.enum(['2025-11-25', '2025-03-26', '2024-11-05']).optional()
+  protocolVersion: z.enum(['2025-11-25', '2025-03-26', '2024-11-05']).optional(),
+  resultContract: resultContractSchema.optional()
 });
 
 const gatewayConfigSchema = z.object({
@@ -79,6 +90,13 @@ const gatewayConfigSchema = z.object({
   runContext: z
     .object({
       runId: z.string().min(1).optional()
+    })
+    .optional(),
+  resultContracts: z
+    .object({
+      toolOverrides: z
+        .record(z.string().min(1), z.enum(['native-json/v1', 'standard/v1']))
+        .optional()
     })
     .optional(),
   policy: z
@@ -102,7 +120,14 @@ const gatewayConfigSchema = z.object({
     .optional(),
   allowLegacyHttpSse: z.boolean().optional(),
   auditFilePath: z.string().optional(),
-  auditHashSecret: z.string().min(1).optional()
+  auditHashSecret: z.string().min(1).optional(),
+  httpSession: z
+    .object({
+      sessionMode: z.enum(['stateful', 'stateless']).optional(),
+      sessionIdleTimeoutMs: z.number().int().positive().optional(),
+      maxSessions: z.number().int().positive().optional()
+    })
+    .optional()
 });
 
 function getArg(name: string, fallback?: string): string | undefined {
@@ -191,6 +216,9 @@ async function main(): Promise<void> {
     ...(effectiveConfig.who ? { who: effectiveConfig.who } : {}),
     ...(effectiveConfig.agent ? { agent: effectiveConfig.agent } : {}),
     ...(effectiveConfig.runContext ? { runContext: effectiveConfig.runContext } : {}),
+    ...(effectiveConfig.resultContracts
+      ? { resultContracts: effectiveConfig.resultContracts }
+      : {}),
     ...(effectiveConfig.policy ? { policy: effectiveConfig.policy } : {}),
     ...(effectiveConfig.capabilities ? { capabilities: effectiveConfig.capabilities } : {}),
     ...(effectiveConfig.allowLegacyHttpSse !== undefined
@@ -204,12 +232,55 @@ async function main(): Promise<void> {
   if (transport === 'stdio') {
     gateway.startStdio();
     process.stderr.write('mcp-gateway started on stdio\n');
+    let shuttingDown = false;
+    const shutdown = async (signal: string): Promise<void> => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      // Close downstream connectors before exiting; without this the stdio
+      // backend child processes would be orphaned.
+      await gateway.close().catch(() => undefined);
+      process.stderr.write(`mcp-gateway stopped (${signal})\n`);
+      process.exit(0);
+    };
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
     return;
   }
 
   if (transport === 'http') {
-    gateway.startHttp({ port, path: '/mcp' });
-    process.stderr.write(`mcp-gateway started on http://localhost:${port}/mcp\n`);
+    const sessionMode =
+      getArg('sessionMode') ?? effectiveConfig.httpSession?.sessionMode ?? 'stateful';
+    if (sessionMode !== 'stateful' && sessionMode !== 'stateless') {
+      throw new Error(`Invalid sessionMode: ${sessionMode}`);
+    }
+    const httpServer = gateway.startHttp({
+      port,
+      path: '/mcp',
+      sessionMode,
+      ...(effectiveConfig.httpSession?.sessionIdleTimeoutMs !== undefined
+        ? { sessionIdleTimeoutMs: effectiveConfig.httpSession.sessionIdleTimeoutMs }
+        : {}),
+      ...(effectiveConfig.httpSession?.maxSessions !== undefined
+        ? { maxSessions: effectiveConfig.httpSession.maxSessions }
+        : {})
+    });
+    process.stderr.write(`mcp-gateway started on http://localhost:${port}/mcp (${sessionMode})\n`);
+
+    let shuttingDown = false;
+    const shutdown = async (signal: string): Promise<void> => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      await gateway.close().catch(() => undefined);
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      process.stderr.write(`mcp-gateway stopped (${signal})\n`);
+      process.exit(0);
+    };
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
     return;
   }
 

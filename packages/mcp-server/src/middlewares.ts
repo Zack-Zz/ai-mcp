@@ -1,4 +1,4 @@
-import { McpError, type ErrorCode } from '@ai-mcp/shared';
+import { McpError } from '@ai-mcp/shared';
 import type { Middleware } from './types.js';
 
 export function authMiddleware(enabled = false): Middleware {
@@ -27,15 +27,26 @@ export function auditMiddleware(
     traceId: string;
     method: string;
     outcome: 'ok' | 'error';
-    errorCode?: ErrorCode;
+    errorCode?: string;
   }) => void
 ): Middleware {
   return async (ctx, next) => {
     try {
       await next();
+      // The terminal already ran inside next(), so return-style tool
+      // failures are visible on ctx instead of arriving as exceptions.
+      if (ctx.outcome === 'tool_error' || ctx.outcome === 'error') {
+        logger({
+          traceId: ctx.traceId,
+          method: ctx.method,
+          outcome: 'error',
+          ...(ctx.faultCode ? { errorCode: ctx.faultCode } : {})
+        });
+        return;
+      }
       logger({ traceId: ctx.traceId, method: ctx.method, outcome: 'ok' });
     } catch (error) {
-      const errorCode: ErrorCode | undefined = error instanceof McpError ? error.code : undefined;
+      const errorCode: string | undefined = error instanceof McpError ? error.code : undefined;
       logger({
         traceId: ctx.traceId,
         method: ctx.method,
