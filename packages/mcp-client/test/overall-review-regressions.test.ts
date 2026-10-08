@@ -27,6 +27,36 @@ async function linked(server: Server) {
 }
 
 describe('overall review: client discovery, contract and ownership', () => {
+  it('rejects a transport that closes while the SDK completes initialized notification', async () => {
+    const server = new Server(
+      { name: 'closing-handshake', version: '1' },
+      { capabilities: { tools: {} } }
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const send = clientTransport.send.bind(clientTransport);
+    clientTransport.send = async (message) => {
+      await send(message);
+      if ('method' in message && message.method === 'notifications/initialized')
+        await clientTransport.close();
+    };
+    const client = new McpClient(clientTransport, 1000);
+    try {
+      await expect(client.connect()).rejects.toMatchObject({
+        category: 'backend_unavailable',
+        permanent: true
+      });
+      expect(client.isConnected).toBe(false);
+      await expect(client.discoverTools()).rejects.toMatchObject({
+        category: 'backend_unavailable',
+        permanent: true
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('does not erase a typed discovery fault even if the wire code is MethodNotFound', async () => {
     const server = new Server(
       { name: 'typed-discovery', version: '1' },

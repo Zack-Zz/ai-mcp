@@ -42,6 +42,13 @@ describe('classifySdkClientError branches', () => {
     expect(classified.permanent).toBe(true);
   });
 
+  it('marks a detached SDK transport permanent so later operations replace it', () => {
+    expect(classifySdkClientError(new Error('Not connected'), 'request')).toMatchObject({
+      category: 'backend_unavailable',
+      permanent: true
+    });
+  });
+
   it('keeps unknown JSON-RPC codes as invalid_request', () => {
     const classified = classifySdkClientError(
       new SdkMcpError(-32601, 'Method not found'),

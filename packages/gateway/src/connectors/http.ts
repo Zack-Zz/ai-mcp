@@ -17,6 +17,7 @@ import type {
 } from './base.js';
 import { DownstreamConnectorError, withConnectorDeadline } from './base.js';
 import { descriptorResultContract, projectStandardResult, toConnectorError } from './result.js';
+import { ClientOperations } from './client-operations.js';
 
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 60;
@@ -42,7 +43,8 @@ export class HttpConnector implements DownstreamConnector {
   private candidate: McpClient | null = null;
   private closePromise: Promise<void> | undefined;
   private readonly shutdownController = new AbortController();
-  private readonly retiringClients = new Set<Promise<void>>();
+  private readonly retiringClients = new Map<McpClient, Promise<void>>();
+  private readonly operations = new ClientOperations();
   private discoveredClient: McpClient | null = null;
   private resultContracts = new Map<string, ResultContract>();
 
@@ -53,7 +55,7 @@ export class HttpConnector implements DownstreamConnector {
   ) {}
 
   public async listTools(): Promise<BackendTool[]> {
-    const client = await this.ensureConnected();
+    const { client, release } = await this.acquireClient();
     try {
       const descriptors = await client.discoverTools({ timeoutMs: this.timeoutMs });
       this.rememberContracts(client, descriptors);
@@ -61,6 +63,8 @@ export class HttpConnector implements DownstreamConnector {
     } catch (error) {
       this.dropBrokenClient(error, client);
       throw toConnectorError(error);
+    } finally {
+      release();
     }
   }
 
@@ -84,11 +88,12 @@ export class HttpConnector implements DownstreamConnector {
   ): Promise<DownstreamToolCallResult> {
     const start = Date.now();
     const input = normalizeInput(args);
-    const client = await awaitWithSignal(this.ensureConnected(), signal);
+    const { client, release } = await this.acquireClient(signal);
     try {
+      let contracts = this.resultContracts;
       if (context?.resultContract === undefined && this.discoveredClient !== client) {
         try {
-          this.rememberContracts(
+          contracts = this.rememberContracts(
             client,
             await client.discoverTools({ timeoutMs: remainingMs(), signal })
           );
@@ -98,12 +103,11 @@ export class HttpConnector implements DownstreamConnector {
             error.category === 'invalid_request' &&
             error.details?.jsonRpcCode === -32601
           )
-            this.rememberContracts(client, []);
+            contracts = this.rememberContracts(client, []);
           else throw error;
         }
       }
-      const resultContract =
-        context?.resultContract ?? this.resultContracts.get(name) ?? 'legacy-auto';
+      const resultContract = context?.resultContract ?? contracts.get(name) ?? 'legacy-auto';
       const identity = {
         ...(context?.traceId !== undefined ? { traceId: context.traceId } : {}),
         ...(context?.runId !== undefined ? { runId: context.runId } : {}),
@@ -123,6 +127,8 @@ export class HttpConnector implements DownstreamConnector {
     } catch (error) {
       this.dropBrokenClient(error, client);
       throw toConnectorError(error);
+    } finally {
+      release();
     }
   }
 
@@ -131,8 +137,10 @@ export class HttpConnector implements DownstreamConnector {
     this.closing = true;
     this.shutdownController.abort(new DOMException('Connector closed', 'AbortError'));
     this.closePromise = (async () => {
-      const clients = new Set([this.client, this.candidate]);
+      const clients = new Set([this.client, this.candidate, ...this.retiringClients.keys()]);
       this.client = null;
+      this.discoveredClient = null;
+      this.resultContracts.clear();
       await Promise.allSettled(
         [...clients]
           .filter((client): client is McpClient => client !== null)
@@ -141,7 +149,7 @@ export class HttpConnector implements DownstreamConnector {
       await this.connectPromise?.catch(() => undefined);
       // A retired connection remains owned while its DELETE/transport close
       // is in flight, even after a new independent operation reconnects.
-      await Promise.allSettled([...this.retiringClients]);
+      await Promise.allSettled([...this.retiringClients.values()]);
     })();
     return this.closePromise;
   }
@@ -153,22 +161,48 @@ export class HttpConnector implements DownstreamConnector {
       classified.permanent &&
       this.client === failedClient
     ) {
-      this.client = null;
-      const retiring = failedClient
-        .close()
-        .catch(() => undefined)
-        .finally(() => {
-          this.retiringClients.delete(retiring);
-        });
-      this.retiringClients.add(retiring);
+      this.retireClient(failedClient);
     }
   }
 
-  private rememberContracts(client: McpClient, descriptors: readonly ToolDescriptor[]): void {
-    this.discoveredClient = client;
-    this.resultContracts = new Map(
+  private retireClient(failedClient: McpClient): void {
+    this.client = null;
+    this.discoveredClient = null;
+    this.resultContracts.clear();
+    const retiring = this.operations
+      .waitForIdle(failedClient)
+      .then(() => failedClient.close())
+      .catch(() => undefined)
+      .finally(() => {
+        this.retiringClients.delete(failedClient);
+      });
+    this.retiringClients.set(failedClient, retiring);
+  }
+
+  private async acquireClient(
+    signal?: AbortSignal
+  ): Promise<{ client: McpClient; release: () => void }> {
+    const client = await awaitWithSignal(this.ensureConnected(), signal);
+    signal?.throwIfAborted();
+    // Retirement or shutdown can win while a caller awaits admission.
+    if (this.client !== client || this.closing) return this.acquireClient(signal);
+    return { client, release: this.operations.acquire(client) };
+  }
+
+  private rememberContracts(
+    client: McpClient,
+    descriptors: readonly ToolDescriptor[]
+  ): Map<string, ResultContract> {
+    const contracts = new Map(
       descriptors.map((tool) => [tool.name, descriptorResultContract(tool)])
     );
+    // An admitted operation may finish after retirement or service shutdown.
+    // Its result belongs to that caller, not to the replacement connection.
+    if (this.client === client && !this.closing) {
+      this.discoveredClient = client;
+      this.resultContracts = contracts;
+    }
+    return contracts;
   }
 
   private buildClient(): McpClient {
@@ -187,6 +221,12 @@ export class HttpConnector implements DownstreamConnector {
   }
 
   private ensureConnected(): Promise<McpClient> {
+    if (this.closing) {
+      return Promise.reject(
+        new DownstreamConnectorError('backend_unavailable', 'Connector is closed')
+      );
+    }
+    if (this.client && !this.client.isConnected) this.retireClient(this.client);
     if (this.client) {
       return Promise.resolve(this.client);
     }

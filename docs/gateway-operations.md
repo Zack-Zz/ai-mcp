@@ -162,3 +162,11 @@ HTTP body 超限明确返回 413，JSON null 初始化返回 400。服务关闭�
 发现只有明确 MethodNotFound 可以兼容直接调用；普通内部错误、typed无效结果不能降级为无校验目录。stateful body 读取归会话所有，TTL 跳过活动读取，DELETE 结束对应请求；服务停止和初始化交接须复核终态。调用 deadline 覆盖 middleware 前后与 legacy/native 入口；审计采用实际 initialize 响应协商值，两模式统一版本策略。
 
 验收与独立复审结果见 [整体 Review 返修报告](superpowers/reviews/2026-10-03-mcp-overall-review-repair-report.md)。
+
+### 2026-10-08 底座缺陷修复
+
+下游 stdio 空闲退出会使 Client 失效，下一独立操作重新启动后端并刷新目录；HTTP session 失效在请求中被发现后退休旧实例，后续独立操作建立新连接。已发出的 tools/call 不自动重放。退休等待已接收的并发操作，服务关闭仍关闭并等待所有所属实例；旧发现结果不会回写替换后的缓存。
+
+完整且经过校验的 MCP peer fault 保留类别、执行状态及来源，本次 trace/invocation 身份保持本地生成，远端关联保存于 details.peerFault。内层 Gateway 审计失败可向外层传播 audit_unavailable 和 operationCompleted；不完整或矛盾错误保持 unknown。查询失败任务的业务状态不改变查询操作成功语义。
+
+本轮 main@cec9f97 的 TDD、真实 stdio/HTTP 证据、54 文件/388 项测试和七项门禁见 [本轮修复记录](superpowers/reviews/2026-10-08-mcp-foundation-defect-repair-report.md)。前面的报告保留其历史日期和验收边界。

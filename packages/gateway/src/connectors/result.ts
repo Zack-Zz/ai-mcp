@@ -1,10 +1,12 @@
 import {
   isJsonObject,
+  isInvocationFault,
   standardToolResultEnvelopeSchema,
   type NativeToolResult,
   type ResultContract,
   type ToolDescriptor,
-  type StandardToolResult
+  type StandardToolResult,
+  type InvocationFault
 } from '@ai-mcp/shared';
 import { McpClientError } from '@ai-mcp/mcp-client';
 import { DownstreamConnectorError, type ConnectorErrorCategory } from './base.js';
@@ -101,15 +103,39 @@ export function toConnectorError(error: unknown): DownstreamConnectorError {
     return error;
   }
   if (error instanceof McpClientError) {
+    // SDK JSON-RPC error data is wrapped by the client for diagnostics.
+    // Only a complete, validated peer fault can carry execution knowledge.
+    const peerFault = connectorInvocationFault(error.details?.data);
     return new DownstreamConnectorError(
       connectorCategory(error.category),
       error.message,
-      error.details,
+      peerFault ?? error.details,
       error.permanent
     );
   }
   const message = error instanceof Error ? error.message : String(error);
   return new DownstreamConnectorError('backend_error', message, error);
+}
+
+export type ConnectorInvocationFault = InvocationFault & {
+  operationCompleted?: boolean | null;
+};
+
+export function connectorInvocationFault(value: unknown): ConnectorInvocationFault | undefined {
+  if (!isInvocationFault(value)) return undefined;
+  const completed = (value as ConnectorInvocationFault).operationCompleted;
+  if (completed !== undefined) {
+    const disposition =
+      completed === true
+        ? 'completed'
+        : completed === false
+          ? 'not_started'
+          : completed === null
+            ? 'unknown'
+            : undefined;
+    if (disposition !== value.executionDisposition) return undefined;
+  }
+  return value;
 }
 
 function connectorCategory(category: string): ConnectorErrorCategory {

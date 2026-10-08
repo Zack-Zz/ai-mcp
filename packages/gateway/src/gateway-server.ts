@@ -10,7 +10,6 @@ import {
   awaitWithSignal,
   invokeContextMetaSchema,
   isJsonObject,
-  isInvocationFault,
   readBoundedHttpBody,
   closeHttpListener,
   trackHttpListener,
@@ -47,6 +46,7 @@ import { resolveProtocolVersion } from './protocol.js';
 import { hashInputPayload } from './audit-hash.js';
 import { GatewayCapabilityRegistry } from './capability-registry.js';
 import { DownstreamConnectorError } from './connectors/base.js';
+import { connectorInvocationFault } from './connectors/result.js';
 import type { CatalogEntry } from './tool-catalog.js';
 import { adaptDownstreamResult } from './result-adapter.js';
 
@@ -1013,7 +1013,12 @@ export class McpGatewayServer {
         traceId: fault.traceId,
         invocationId: fault.invocationId,
         executionDisposition: fault.executionDisposition,
-        ...(fault.source ? { source: fault.source } : {})
+        message: fault.message,
+        ...(fault.source ? { source: fault.source } : {}),
+        ...(fault.details ? { details: fault.details } : {}),
+        ...(fault.operationCompleted !== undefined
+          ? { operationCompleted: fault.operationCompleted }
+          : {})
       });
     }
 
@@ -1148,6 +1153,8 @@ export class McpGatewayServer {
     invocationId: string;
     executionDisposition: 'not_started' | 'completed' | 'unknown';
     source?: FaultSource;
+    details?: JsonObject;
+    operationCompleted?: boolean | null;
   } {
     if (context.signal.aborted)
       return {
@@ -1159,15 +1166,25 @@ export class McpGatewayServer {
         executionDisposition: 'unknown'
       };
     if (error instanceof DownstreamConnectorError) {
-      if (isInvocationFault(error.details)) {
+      const peerFault = connectorInvocationFault(error.details);
+      if (peerFault) {
         return {
-          category: error.details.category,
-          projectCode: error.details.projectCode,
-          message: error.details.message,
+          category: peerFault.category,
+          projectCode: peerFault.projectCode,
+          message: peerFault.message,
           traceId: context.traceId,
           invocationId: context.invocationId,
-          executionDisposition: error.details.executionDisposition,
-          ...(error.details.source ? { source: error.details.source } : {})
+          executionDisposition: peerFault.executionDisposition,
+          source: {
+            ...(peerFault.source ?? { kind: 'peer', backendId: entry.backendId }),
+            traceId: peerFault.source?.traceId ?? peerFault.traceId
+          },
+          // Keep the immediate peer identity and its original source/details
+          // together while the outer fault keeps this invocation's identity.
+          details: { ...(peerFault.details ?? {}), peerFault: peerFault as unknown as JsonObject },
+          ...(peerFault.operationCompleted !== undefined
+            ? { operationCompleted: peerFault.operationCompleted }
+            : {})
         };
       }
       const category = error.category;
@@ -1214,17 +1231,22 @@ export class McpGatewayServer {
     try {
       await this.recordAudit(fields);
     } catch (error) {
-      throw new SdkMcpError(
-        -32603,
-        `Audit persistence failed: ${error instanceof Error ? error.message : String(error)}`,
-        {
-          category: 'audit_unavailable',
-          projectCode: 'AUDIT_UNAVAILABLE',
-          traceId: fields.context.traceId,
-          invocationId: fields.context.invocationId,
-          operationCompleted
-        }
-      );
+      const message = `Audit persistence failed: ${error instanceof Error ? error.message : String(error)}`;
+      throw new SdkMcpError(-32603, message, {
+        category: 'audit_unavailable',
+        projectCode: 'AUDIT_UNAVAILABLE',
+        traceId: fields.context.traceId,
+        invocationId: fields.context.invocationId,
+        message,
+        executionDisposition:
+          operationCompleted === true
+            ? 'completed'
+            : operationCompleted === false
+              ? 'not_started'
+              : 'unknown',
+        source: { kind: 'audit', traceId: fields.context.traceId },
+        operationCompleted
+      });
     }
   }
 

@@ -92,6 +92,8 @@ export class McpClient {
   private connectPromise: Promise<void> | undefined = undefined;
   private closePromise: Promise<void> | undefined = undefined;
   private closed = false;
+  private connected = false;
+  private transportClosed = false;
   private readonly shutdownController = new AbortController();
   private permanentFailure: McpClientError | null = null;
   private catalog: DiscoveryCatalog | null = null;
@@ -109,6 +111,27 @@ export class McpClient {
       name: 'ai-mcp-client',
       version: '0.1.0'
     });
+    this.sdkClient.onclose = () => {
+      this.transportClosed = true;
+      // A completed handshake promise is not evidence of a live transport.
+      // This facade owns one transport; the connector owns its replacement.
+      if (this.connected && !this.closed) {
+        this.permanentFailure = new McpClientError(
+          'backend_unavailable',
+          'BACKEND_UNAVAILABLE',
+          'Downstream connection closed',
+          undefined,
+          true
+        );
+        this.connectPromise = undefined;
+      }
+      this.connected = false;
+      this.catalog = null;
+    };
+  }
+
+  public get isConnected(): boolean {
+    return this.connected && !this.closed && this.permanentFailure === null;
   }
 
   /** Explicit connect with a bounded deadline; safe to call repeatedly. */
@@ -489,9 +512,11 @@ export class McpClient {
     }
     await this.connectPromise;
     this.assertNotClosed();
+    if (this.permanentFailure) throw this.permanentFailure;
   }
 
   private async attemptConnect(): Promise<void> {
+    this.transportClosed = false;
     try {
       await withTimeout(
         this.sdkClient.connect(this.transport),
@@ -499,6 +524,16 @@ export class McpClient {
         'Connecting to downstream MCP'
       );
       this.assertNotClosed();
+      if (this.transportClosed) {
+        throw new McpClientError(
+          'backend_unavailable',
+          'BACKEND_UNAVAILABLE',
+          'Downstream connection closed during initialization',
+          undefined,
+          true
+        );
+      }
+      this.connected = true;
     } catch (error) {
       this.connectPromise = undefined;
       const classified = classifySdkClientError(error, 'connect');

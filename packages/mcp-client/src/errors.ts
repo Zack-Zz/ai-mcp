@@ -213,7 +213,13 @@ export function classifySdkClientError(
     return new McpClientError('backend_timeout', 'BACKEND_TIMEOUT', message);
   }
   if (normalized.includes('not connected')) {
-    return new McpClientError('backend_unavailable', 'BACKEND_UNAVAILABLE', message);
+    return new McpClientError(
+      'backend_unavailable',
+      'BACKEND_UNAVAILABLE',
+      message,
+      undefined,
+      true
+    );
   }
   if (normalized.includes('abort')) {
     return new McpClientError('cancelled', 'CANCELLED', message);
