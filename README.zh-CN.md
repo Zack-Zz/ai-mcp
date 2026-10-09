@@ -10,6 +10,11 @@
 - `@ai-mcp/mcp-server`: MCP Server 实现与传输适配器
 - `@ai-mcp/mcp-client`: MCP Client SDK 与 CLI
 - `@ai-mcp/gateway`: MCP Gateway（基于官方 SDK 构建）
+- [`@ai-mcp/agent-bridge`](./packages/agent-bridge/README.md): 通过统一CLI、MCP和控制API管理明确派发的独立持久Agent任务，0.1.0候选
+
+Agent Bridge 是独立能力模块。普通开发与原生子代理沿用既有行为，跨工具
+或独立会话派发需要用户明确要求；见[总体架构](./docs/architecture.md)与
+[开发收口记录](./docs/reviews/2026-10-09-agent-bridge-development-delivery.md)。
 
 内置能力（另支持任意业务工具，见下）：
 
@@ -77,7 +82,7 @@ pnpm --filter @ai-mcp/mcp-client dev tools call echo --transport http --endpoint
 - 调用预算覆盖连接等待、发现和执行；原生 `isError` 与声明为 standard 的 `ok:false` 均表示失败，纯媒体结果保留原生内容块。关闭会取消活动调用、在 grace 期限内回收未完成 HTTP body 的连接，并 flush 服务拥有的审计存储。注册/发现时拒绝 `$async` JSON Schema。
 - 单次调用上下文（`traceId`/`runId`/`taskId`）经请求 `_meta['org.ai-mcp/context']` 传递，不混入工具 arguments，并连同 `invocationId`、outcome 与下游 trace 关联写入 JSONL 审计。
 
-[MCP 底座设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-design.md)、[实施路线](./docs/superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md)、[架构设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-architecture.md) 与 [详细改造设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md) 记录本轮已实现的 P0 范围。SDK v2 / 2026-07-28 迁移（P1）为后续独立阶段，本仓库尚未启用。
+[MCP 底座设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-design.md)、[实施路线](./docs/superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md)、[架构设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-architecture.md) 与 [详细改造设计](./docs/superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md) 记录已实现的 P0 范围。四个基础包仍使用SDK v1，其SDK v2 / 2026-07-28迁移（P1）属于独立阶段。Agent Bridge已有独立SDK v2 MCP入口，不据此声称现有v1 Gateway或各原生宿主客户端已兼容。
 
 ## 质量门禁
 

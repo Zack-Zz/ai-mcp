@@ -10,6 +10,12 @@ TypeScript monorepo for an MCP Server and MCP Client (SDK + CLI), including `std
 - `@ai-mcp/mcp-server`: MCP server implementation and transport adapters
 - `@ai-mcp/mcp-client`: MCP client SDK and CLI
 - `@ai-mcp/gateway`: MCP gateway (SDK-based upstream + downstream connectors)
+- [`@ai-mcp/agent-bridge`](./packages/agent-bridge/README.md): explicit persistent native-agent tasks through one CLI, MCP and control API; candidate `0.1.0`
+
+Agent Bridge is an independent capability module. Ordinary development and native
+subagents keep their existing behavior; cross-tool or independent-session dispatch
+requires an explicit user request. See the [architecture](./docs/architecture.md)
+and [development record](./docs/reviews/2026-10-09-agent-bridge-development-delivery.md).
 
 Built-in capabilities (plus arbitrary business tools, see below):
 
@@ -77,7 +83,7 @@ pnpm --filter @ai-mcp/mcp-client dev tools call echo --transport http --endpoint
 - For `standard/v1`, downstream `outputSchema` describes the entire envelope. Successful results are validated against that schema; closed envelopes keep their body unchanged and receive correlation in result `_meta['org.ai-mcp/context']`. Passing only `runId`/`taskId` generates a trace automatically.
 - Call budgets include connection waits, discovery and execution. Native `isError` and declared standard `ok:false` remain failures; media-only results keep their content blocks. Shutdown cancels active calls, releases incomplete HTTP bodies within the grace period and flushes service-owned audit stores. `$async` JSON schemas are rejected at registration/discovery.
 
-The [MCP foundation design](./docs/superpowers/specs/2026-10-01-mcp-foundation-design.md), [implementation plan](./docs/superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md), [architecture design](./docs/superpowers/specs/2026-10-01-mcp-foundation-architecture.md) and [detailed refactoring design](./docs/superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md) document the P0 scope implemented here. The SDK v2 / 2026-07-28 migration (P1) is a separate later phase, not enabled by this repository yet.
+The [MCP foundation design](./docs/superpowers/specs/2026-10-01-mcp-foundation-design.md), [implementation plan](./docs/superpowers/plans/2026-10-01-mcp-foundation-implementation-plan.md), [architecture design](./docs/superpowers/specs/2026-10-01-mcp-foundation-architecture.md) and [detailed refactoring design](./docs/superpowers/specs/2026-10-01-mcp-foundation-refactoring-detail.md) document the P0 scope implemented here. The four foundation packages still use SDK v1; their SDK v2 / 2026-07-28 migration (P1) is separate. Agent Bridge already has an independent SDK v2 MCP entrypoint and does not claim compatibility with the existing v1 Gateway or every native host client.
 
 ## Quality gates
 
